@@ -51,6 +51,9 @@ class ToVector(torch.nn.Module):
 
 class Conv2DRot3x3(torch.nn.Module):
     '''
+
+    THIS MODULE IS OBSOLETE AND HAS BEEN REPLACED WITH THE VERSION WITHOUT 3x3 IN ITS NAME.
+
     This module provides our most important functionality.
 
     We consider matrix valued kernels with special constraints.
@@ -170,7 +173,16 @@ class Conv2DRot3x3(torch.nn.Module):
         return out
     
 class Conv2DRot(torch.nn.Module):
-    def __init__(self, in_channels,out_channels,kernel_size,stride=1,padding=None,bias=True):
+    '''
+    Same interface as a typical conv2d layer, but requires number of cannels to be a multiple of 3 (blocks of 1 scalar and two vector components).
+
+    
+    '''
+    def __init__(self, in_channels,out_channels,kernel_size,stride=1,padding=None,bias=True,reflection=False):
+        '''
+        Initialize rotationally invariant kernel in 2D.
+        If reflection == True, then we use a rotation and reflection invariant kernel, which as fewer degrees of freedom.
+        '''
         super().__init__()
         # check kernel size
         if not kernel_size%2:
@@ -191,6 +203,8 @@ class Conv2DRot(torch.nn.Module):
             padding = (kernel_size-1)//2 
         self.padding = padding
         self.use_bias = bias
+
+        self.reflection = reflection
         
         
 
@@ -202,13 +216,15 @@ class Conv2DRot(torch.nn.Module):
         self.register_buffer('R2',torch.sum(self.X**2,0))
         
         # now in 2D we will work with 90 degree rotations to form a basis for 2x2 matrices
-        R90 = torch.tensor([[0.0,-1.0],[1.0,0.0]])        
-        self.register_buffer('R90X',(R90@self.X.permute(1,2,0)[...,None])[...,0].permute(-1,0,1) )
+        if not reflection:
+            R90 = torch.tensor([[0.0,-1.0],[1.0,0.0]])      
+            self.register_buffer('R90X',(R90@self.X.permute(1,2,0)[...,None])[...,0].permute(-1,0,1) )
         self.register_buffer('eye',torch.eye(2)[:,:,None,None,None,None])
         self.register_buffer('XX',self.X[:,None,None,None]*self.X[None,:,None,None])
-        self.register_buffer('XR90X',self.X[:,None,None,None]*self.R90X[None,:,None,None])
-        self.register_buffer('R90XX',self.R90X[:,None,None,None]*self.X[None,:,None,None])
-        self.register_buffer('R90XR90X',self.R90X[:,None,None,None]*self.R90X[None,:,None,None])
+        if not reflection:
+            self.register_buffer('XR90X',self.X[:,None,None,None]*self.R90X[None,:,None,None])
+            self.register_buffer('R90XX',self.R90X[:,None,None,None]*self.X[None,:,None,None])
+            self.register_buffer('R90XR90X',self.R90X[:,None,None,None]*self.R90X[None,:,None,None])
 
         # now our kernels will be functions of distnace |c|, so we will use indicator functions
         # TODO, use some kind of a list so I can support arbitrary sizes
@@ -250,15 +266,18 @@ class Conv2DRot(torch.nn.Module):
         self.s = torch.nn.parameter.Parameter(torch.randn(self.nr,self.out_blocks,self.in_blocks)*k) # scalar
         if kernel_size > 1:
             self.r0 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # row
-            self.r1 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # row
+            if not reflection:
+                self.r1 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # row
             self.c0 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # col
-            self.c1 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # col
+            if not reflection:
+                self.c1 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # col
         self.a = torch.nn.parameter.Parameter(torch.randn(self.nr,self.out_blocks,self.in_blocks)*k) # matrix identity
         if kernel_size > 1:
             self.b00 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # matrix outer
-            self.b01 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # matrix outer
-            self.b10 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # matrix outer
-            self.b11 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # matrix outer
+            if not reflection:
+                self.b01 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # matrix outer
+                self.b10 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # matrix outer
+                self.b11 = torch.nn.parameter.Parameter(torch.randn(self.nr-1,self.out_blocks,self.in_blocks)*k) # matrix outer
         
         # set up bias
         # TODO, only use bias for scalar channels
@@ -283,30 +302,42 @@ class Conv2DRot(torch.nn.Module):
             # column part
             # we need to initialize the c's as zeros of the correct size
             # TODO make this work with or without batch dimension
-            c0 = self.czero            
-            c1 = self.czero
+            c0 = self.czero
+            if not self.reflection:
+                c1 = self.czero
             if self.kernel_size > 1:
                 c0 = c0 + (self.c0[0,...,None,None]*self.R21 + self.c0[1,...,None,None]*self.R22)
-                c1 = c1 + (self.c1[0,...,None,None]*self.R21 + self.c1[1,...,None,None]*self.R22)
+                if not self.reflection:
+                    c1 = c1 + (self.c1[0,...,None,None]*self.R21 + self.c1[1,...,None,None]*self.R22)
             if self.kernel_size > 3:
                 c0 = c0 + (self.c0[2,...,None,None]*self.R24 + self.c0[3,...,None,None]*self.R25 + self.c0[4,...,None,None]*self.R28)
-                c1 = c1 + (self.c1[2,...,None,None]*self.R24 + self.c1[3,...,None,None]*self.R25 + self.c1[4,...,None,None]*self.R28)
+                if not self.reflection:
+                    c1 = c1 + (self.c1[2,...,None,None]*self.R24 + self.c1[3,...,None,None]*self.R25 + self.c1[4,...,None,None]*self.R28)
             c0 = c0 * self.X[:,None,None,None]
-            c1 = c1 * self.R90X[:,None,None,None]
-            c = c0 + c1
+            if not self.reflection:
+                c1 = c1 * self.R90X[:,None,None,None]            
+                c = c0 + c1
+            else:
+                c = c0
 
             # row part
             r0 = self.rzero
-            r1 = self.rzero            
+            if not self.reflection:
+                r1 = self.rzero
             if self.kernel_size > 1:
                 r0 = r0 + (self.r0[0,...,None,None]*self.R21 + self.r0[1,...,None,None]*self.R22)
-                r1 = r1 + (self.r1[0,...,None,None]*self.R21 + self.r1[1,...,None,None]*self.R22)
+                if not self.reflection:
+                    r1 = r1 + (self.r1[0,...,None,None]*self.R21 + self.r1[1,...,None,None]*self.R22)
             if self.kernel_size > 3:
                 r0 = r0 + (self.r0[2,...,None,None]*self.R24 + self.r0[3,...,None,None]*self.R25 + self.r0[4,...,None,None]*self.R28)
-                r1 = r1 + (self.r1[2,...,None,None]*self.R24 + self.r1[3,...,None,None]*self.R25 + self.r1[4,...,None,None]*self.R28)           
+                if not self.reflection:
+                    r1 = r1 + (self.r1[2,...,None,None]*self.R24 + self.r1[3,...,None,None]*self.R25 + self.r1[4,...,None,None]*self.R28)           
             r0 = r0 * self.X[None,:,None,None]            
-            r1 = r1 * self.R90X[None,:,None,None]
-            r = r0 + r1
+            if not self.reflection:
+                r1 = r1 * self.R90X[None,:,None,None]
+                r = r0 + r1
+            else:
+                r = r0
 
             # matrix part proportional to identity
             a = self.a[0,...,None,None]*self.R20 
@@ -317,27 +348,33 @@ class Conv2DRot(torch.nn.Module):
             a = a*self.eye
             
 
-            # matrix part proportional to xx^T
+            # matrix part proportional to xx^T            
             b00 = 0.0
-            b01 = 0.0
-            b10 = 0.0
-            b11 = 0.0
+            if not self.reflection:
+                b01 = 0.0
+                b10 = 0.0
+                b11 = 0.0
             if self.kernel_size > 1:
                 b00 = self.b00[0,...,None,None]*self.R21 + self.b00[1,...,None,None]*self.R22
-                b01 = self.b01[0,...,None,None]*self.R21 + self.b01[1,...,None,None]*self.R22
-                b10 = self.b10[0,...,None,None]*self.R21 + self.b10[1,...,None,None]*self.R22
-                b11 = self.b11[0,...,None,None]*self.R21 + self.b11[1,...,None,None]*self.R22
+                if not self.reflection:
+                    b01 = self.b01[0,...,None,None]*self.R21 + self.b01[1,...,None,None]*self.R22
+                    b10 = self.b10[0,...,None,None]*self.R21 + self.b10[1,...,None,None]*self.R22
+                    b11 = self.b11[0,...,None,None]*self.R21 + self.b11[1,...,None,None]*self.R22
             if self.kernel_size > 3:
                 b00 = self.b00[2,...,None,None]*self.R24 + self.b00[3,...,None,None]*self.R25 + self.b00[4,...,None,None]*self.R28
-                b01 = self.b01[2,...,None,None]*self.R24 + self.b01[3,...,None,None]*self.R25 + self.b01[4,...,None,None]*self.R28
-                b10 = self.b10[2,...,None,None]*self.R24 + self.b10[3,...,None,None]*self.R25 + self.b10[4,...,None,None]*self.R28
-                b11 = self.b11[2,...,None,None]*self.R24 + self.b11[3,...,None,None]*self.R25 + self.b11[4,...,None,None]*self.R28
+                if not self.reflection:
+                    b01 = self.b01[2,...,None,None]*self.R24 + self.b01[3,...,None,None]*self.R25 + self.b01[4,...,None,None]*self.R28
+                    b10 = self.b10[2,...,None,None]*self.R24 + self.b10[3,...,None,None]*self.R25 + self.b10[4,...,None,None]*self.R28
+                    b11 = self.b11[2,...,None,None]*self.R24 + self.b11[3,...,None,None]*self.R25 + self.b11[4,...,None,None]*self.R28
             b00 = b00 * self.XX
-            b01 = b01 * self.XR90X
-            b10 = b10 * self.R90XX
-            b11 = b11 * self.R90XR90X
-            # add them all into a matrix
-            m = a+b00+b01+b10+b11
+            if not self.reflection:
+                b01 = b01 * self.XR90X
+                b10 = b10 * self.R90XX
+                b11 = b11 * self.R90XR90X
+                # add them all into a matrix
+                m = a+b00+b01+b10+b11
+            else:
+                m = a + b00
             
 
             # build the convolution block
@@ -531,88 +568,92 @@ class RotNet18(torch.nn.Module):
     18 layer resnet with 4 scales of two repeats each.
 
     This is to match the medmnist evaluation
+
+    Note the medmnist paper uses 64 channels at the first layer, so I will us 63.
     '''
-    def __init__(self,n0=63,n1=10,kernel_size=3):
+    def __init__(self,n0=63,n1=10,kernel_size=3,reflection=False):
         super().__init__()
         self.n0 = n0
         self.n1 = n1
+        self.reflection = reflection
 
         if kernel_size==3:
             padding = 1
         elif kernel_size == 5:
             padding = 2
+
         
 
         self.toblock = ToVector()
         
 
         # first layer
-        self.c0 = Conv2DRot(9,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c0 = Conv2DRot(9,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b0 = BatchNormRot(n0)
         self.s0 = SigmoidRot(n0)
 
 
         # now a set of 2, at full res
-        self.c1 = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1 = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1 = BatchNormRot(n0)
         self.s1 = SigmoidRot(n0)
-        self.c1a = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1a = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1a = BatchNormRot(n0)
         self.s1a = SigmoidRot(n0)
 
-        self.c1_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1_ = BatchNormRot(n0)
         self.s1_ = SigmoidRot(n0)
-        self.c1a_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1a_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1a_ = BatchNormRot(n0)
         self.s1a_ = SigmoidRot(n0)
 
         # now a set of 2, at half res
-        self.c2 = Conv2DRot(n0,n0*2,kernel_size,1,padding,bias=False)
+        self.c2 = Conv2DRot(n0,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2 = BatchNormRot(n0*2)
         self.s2 = SigmoidRot(n0*2)        
-        self.c2a = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2a = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2a = BatchNormRot(n0*2)
         self.s2a = SigmoidRot(n0*2)
         self.d2 = Down2Rot()
 
-        self.c2_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2_ = BatchNormRot(n0*2)
         self.s2_ = SigmoidRot(n0*2)        
-        self.c2a_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2a_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2a_ = BatchNormRot(n0*2)
         self.s2a_ = SigmoidRot(n0*2)
 
         # now a set of 2, at quarter res
-        self.c3 = Conv2DRot(n0*2,n0*4,kernel_size,1,padding,bias=False)
+        self.c3 = Conv2DRot(n0*2,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3 = BatchNormRot(n0*4)
         self.s3 = SigmoidRot(n0*4)        
-        self.c3a = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3a = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3a = BatchNormRot(n0*4)
         self.s3a = SigmoidRot(n0*4)
         self.d3 = Down2Rot()
 
-        self.c3_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3_ = BatchNormRot(n0*4)
         self.s3_ = SigmoidRot(n0*4)        
-        self.c3a_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3a_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3a_ = BatchNormRot(n0*4)
         self.s3a_ = SigmoidRot(n0*4)
 
 
         # now a set of 2, at eighth res
-        self.c4 = Conv2DRot(n0*4,n0*8,kernel_size,1,padding,bias=False)
+        self.c4 = Conv2DRot(n0*4,n0*8,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b4 = BatchNormRot(n0*8)
         self.s4 = SigmoidRot(n0*8)        
-        self.c4a = Conv2DRot(n0*8,n0*8,kernel_size,1,padding,bias=False)
+        self.c4a = Conv2DRot(n0*8,n0*8,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b4a = BatchNormRot(n0*8)
         self.s4a = SigmoidRot(n0*8)
         self.d4 = Down2Rot()
 
-        self.c4_ = Conv2DRot(n0*8,n0*8,kernel_size,1,padding,bias=False)
+        self.c4_ = Conv2DRot(n0*8,n0*8,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b4_ = BatchNormRot(n0*8)
         self.s4_ = SigmoidRot(n0*8)        
-        self.c4a_ = Conv2DRot(n0*8,n0*8,kernel_size,1,padding,bias=False)
+        self.c4a_ = Conv2DRot(n0*8,n0*8,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b4a_ = BatchNormRot(n0*8)
         self.s4a_ = SigmoidRot(n0*8)
 
@@ -918,10 +959,11 @@ class RotNet20(torch.nn.Module):
     16 32 and 64 channels
 
     '''
-    def __init__(self,n0=15,n1=10,kernel_size=3):
+    def __init__(self,n0=15,n1=10,kernel_size=3,reflection=False):
         super().__init__()
         self.n0 = n0
         self.n1 = n1
+        self.reflection = reflection
 
         if kernel_size==3:
             padding = 1
@@ -931,76 +973,76 @@ class RotNet20(torch.nn.Module):
         self.tv = ToVector()        
 
         # first layer
-        self.c0 = Conv2DRot(9,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c0 = Conv2DRot(9,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b0 = BatchNormRot(n0)
         self.s0 = SigmoidRot(n0)
 
 
         # now a set of 3, at full res
-        self.c1 = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1 = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1 = BatchNormRot(n0)
         self.s1 = SigmoidRot(n0)
-        self.c1a = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1a = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1a = BatchNormRot(n0)
         self.s1a = SigmoidRot(n0)
 
-        self.c1_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1_ = BatchNormRot(n0)
         self.s1_ = SigmoidRot(n0)
-        self.c1a_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1a_ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1a_ = BatchNormRot(n0)
         self.s1a_ = SigmoidRot(n0)
 
-        self.c1__ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1__ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1__ = BatchNormRot(n0)
         self.s1__ = SigmoidRot(n0)
-        self.c1a__ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False) # 32x32
+        self.c1a__ = Conv2DRot(n0,n0,kernel_size,1,padding,bias=False,reflection=reflection) # 32x32
         self.b1a__ = BatchNormRot(n0)
         self.s1a__ = SigmoidRot(n0)
 
         # now a set of 3, at half res
-        self.c2 = Conv2DRot(n0,n0*2,kernel_size,1,padding,bias=False)
+        self.c2 = Conv2DRot(n0,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2 = BatchNormRot(n0*2)
         self.s2 = SigmoidRot(n0*2)        
-        self.c2a = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2a = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2a = BatchNormRot(n0*2)
         self.s2a = SigmoidRot(n0*2)
         self.d2 = Down2Rot()
 
-        self.c2_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2_ = BatchNormRot(n0*2)
         self.s2_ = SigmoidRot(n0*2)        
-        self.c2a_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2a_ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2a_ = BatchNormRot(n0*2)
         self.s2a_ = SigmoidRot(n0*2)
 
-        self.c2__ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2__ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2__ = BatchNormRot(n0*2)
         self.s2__ = SigmoidRot(n0*2)        
-        self.c2a__ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False)
+        self.c2a__ = Conv2DRot(n0*2,n0*2,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b2a__ = BatchNormRot(n0*2)
         self.s2a__ = SigmoidRot(n0*2)
 
         # now a set of 3, at quarter res
-        self.c3 = Conv2DRot(n0*2,n0*4,kernel_size,1,padding,bias=False)
+        self.c3 = Conv2DRot(n0*2,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3 = BatchNormRot(n0*4)
         self.s3 = SigmoidRot(n0*4)        
-        self.c3a = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3a = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3a = BatchNormRot(n0*4)
         self.s3a = SigmoidRot(n0*4)
         self.d3 = Down2Rot()
 
-        self.c3_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3_ = BatchNormRot(n0*4)
         self.s3_ = SigmoidRot(n0*4)        
-        self.c3a_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3a_ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3a_ = BatchNormRot(n0*4)
         self.s3a_ = SigmoidRot(n0*4)
 
-        self.c3__ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3__ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3__ = BatchNormRot(n0*4)
         self.s3__ = SigmoidRot(n0*4)        
-        self.c3a__ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False)
+        self.c3a__ = Conv2DRot(n0*4,n0*4,kernel_size,1,padding,bias=False,reflection=reflection)
         self.b3a__ = BatchNormRot(n0*4)
         self.s3a__ = SigmoidRot(n0*4)
 
@@ -1105,7 +1147,7 @@ class ResNet20(torch.nn.Module):
     
     
     '''
-    def __init__(self,n0=64,n1=10):
+    def __init__(self,n0=16,n1=10):
         super().__init__()
         # note in the resnet paper, downsampling is done as the first block at a scale, not the last
         
@@ -1115,8 +1157,10 @@ class ResNet20(torch.nn.Module):
         #self.sigmoid = sigmoid_rot
         self.sigmoid = torch.relu
         
-        # note medmnist uses 64,128,256,512
+        # note medmnist uses 64,128,256,512, in their 18 layer
         # also some expansion
+        
+        # here cifar uses 16, 32, 64 in their 20 layer
         
         
         
@@ -1433,8 +1477,10 @@ def train_and_eval(net,my_loader, my_loader_val, my_loader_test, device='cpu',ne
         ax[3].plot(hard_auc_test,label='test')
         ax[3].legend()
         ax[3].set_title('Hard AUC')
+        # note the next two lines seem to work for real time updates with widget
         clear_output(wait=True)
         display(fig)        
+        # the next two lines seem to work for real time updates with notebook
         fig.canvas.draw()
         
     return {        
