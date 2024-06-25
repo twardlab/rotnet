@@ -12,8 +12,6 @@ We interpret feature maps in blocks of size 3.  The first component is a scalar 
 Inputs and outputs are supposed to be scalars.
 
 Convolutions include linear to and from scalars and vectors (4 kinds) that all respect rotation equivariance.
-
-
 '''
 
 class ExtractScalar(torch.nn.Module):
