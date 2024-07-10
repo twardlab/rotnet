@@ -33,6 +33,7 @@ class ScalarToScalar(torch.nn.Module):
         # to
         # out x in x kernel_size x kernel_size        
         c = self.weights[...,self.inds]
+        self.c = c
                         
         tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
         return torch.nn.functional.conv2d(tmp,c,self.bias)
@@ -155,6 +156,7 @@ class VectorToScalar(torch.nn.Module):
         # to
         # out x in x kernel_size x kernel_size             
         c = torch.repeat_interleave(self.weights[...,self.inds],2,1)*self.Xhat                
+        self.c = c
         tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
         return torch.nn.functional.conv2d(tmp,c,self.bias) 
         
@@ -210,6 +212,9 @@ class VectorToVector(torch.nn.Module):
             cxx = torch.repeat_interleave(torch.repeat_interleave(self.weightsxx,2,0),2,1)[...,self.indsxx]*self.XhatXhat
             cidentity = torch.repeat_interleave(torch.repeat_interleave(self.weightsidentity,2,0),2,1)[...,self.indsidentity]*self.identity
             c = cxx + cidentity
+            self.c = c
+            self.cxx = cxx
+            self.cidentity = cidentity
             tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
             return torch.nn.functional.conv2d(tmp,c) # no bias when output is vector
         
