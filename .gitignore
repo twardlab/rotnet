@@ -4,4 +4,8 @@ ScaVecCNN.ipynb
 VanillaCNN.ipynb
 ScaVecMoment.ipynb
 __pycache__/moment_kernels.cpython-39.pyc
-
+__pycache__/benchmark_models.cpython-39.pyc
+notebook2024.sh
+benchmark/__pycache__/benchmark_models.cpython-39.pyc
+__pycache__/models.cpython-39.pyc
+jupyter-notebook.log
