@@ -1,4 +1,20 @@
+'''
+Rotation and reflection equivariance using moment kernels in 2D.
 
+We support scalar fields, vector fields, convolution maps between them, batch norm, and nonlinearity.
+
+TODO
+----
+Try to move if statements out of the forward method and somehow into the init method.
+
+Consider adding in rotation but not reflection for 2D.
+
+Build 3D.
+
+
+
+
+'''
 import torch
 import numpy as np
 
