@@ -9,7 +9,7 @@ import argparse
 import time
 from tqdm import tqdm
 import json
-from comet import Experiment
+from comet_ml import Experiment
 
 PRESETS ={
     "VanillaCNN" : VanillaCNN,
@@ -26,13 +26,13 @@ experiment = Experiment(
     workspace="joeshmoe03",
 )
 
-def calculate_metrics(model, loader, criterion, device):
+def calculate_metrics(model, loader, criterion, device, num_classes):
     model.eval()
     acc_loss = 0
     acc = MulticlassAccuracy()
     precision = MulticlassPrecision()
     recall = MulticlassRecall()
-    auroc = MulticlassAUROC()
+    auroc = MulticlassAUROC(num_classes = num_classes)
     
     with torch.no_grad():
         for images, labels in loader:
@@ -141,7 +141,7 @@ def main(args):
         # validation loop: evaluate at given interval or at the end
         if epoch % args.val_interval == 0 or epoch == args.epochs - 1:
             model.eval()
-            valid_loss, valid_acc, valid_prec, valid_rec, valid_auc = calculate_metrics(model, valid_loader, criterion, device)
+            valid_loss, valid_acc, valid_prec, valid_rec, valid_auc = calculate_metrics(model, valid_loader, criterion, device, n_classes)
 
             if valid_acc > best_acc:
                 best_acc = valid_acc
@@ -164,6 +164,7 @@ def main(args):
             if epoch == args.epochs - 1:
                 final_acc = valid_acc
                 final_auc = valid_auc
+                torch.save(model.state_dict(), f"final_{args.model}_{data_flag}.pt")
 
         # log the metrics to comet
         experiment.log_metric("train_loss", acc_loss / n_batches)

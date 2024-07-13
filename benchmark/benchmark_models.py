@@ -1,6 +1,13 @@
+# move up one directory to import models
+import os
+import sys
 import importlib
+
+current_dir = os.path.dirname(os.path.realpath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
+
 import moment_kernels as mk
-from models import *
 importlib.reload(mk)
 
 import torch.nn as tnn
