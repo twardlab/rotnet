@@ -4,4 +4,14 @@ ScaVecCNN.ipynb
 VanillaCNN.ipynb
 ScaVecMoment.ipynb
 __pycache__/moment_kernels.cpython-39.pyc
-
+__pycache__/benchmark_models.cpython-39.pyc
+notebook2024.sh
+benchmark/__pycache__/benchmark_models.cpython-39.pyc
+__pycache__/models.cpython-39.pyc
+jupyter-notebook.log
+benchmark/equiv_benchmark.log
+benchmark/best_acc_VanillaCNN_dermamnist.pt
+benchmark/best_auc_VanillaCNN_dermamnist.pt
+benchmark/final_VanillaCNN_dermamnist.pt
+benchmark/metrics_VanillaCNN_dermamnist.json
+benchmark/train.sh
