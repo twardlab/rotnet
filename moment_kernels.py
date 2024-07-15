@@ -85,15 +85,18 @@ class ScalarToVector(torch.nn.Module):
         self.register_buffer('inds',inds) # don't need a parameter for r=0, but this makes
         
         self.weights = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels)) # TODO: use the right normalizatoin
-        
-    def forward(self,x):
-        # size 1 needs to be a special case, the result is just 0
+        if x.shape[-1] == 1:
+            self.forward = self.forwarde1
+        else:
+            self.forward = self.forwardg1
+    
+    def forwarde1(self,x):        
+        # kernel size 1 needs to be a special case because self.inds is empty, the result is just 0
         # no padding allowed
         # note we assume square
-        if x.shape[-1] == 1:
-            return torch.zeros(x.shape[0],self.out_channels*2,1,1,dtype=x.dtype,device=x.device)
-            
-        
+        return torch.zeros(x.shape[0],self.out_channels*2,1,1,dtype=x.dtype,device=x.device)
+    
+    def forwardg1(self,x):
         # convert the weights into a kernel
         # we reshape from out x in x len(rs)
         # to
@@ -107,6 +110,13 @@ class ScalarToVector(torch.nn.Module):
         # here's a better way
         tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)
         return torch.nn.functional.conv2d(tmp,c)
+        
+        
+        
+        
+            
+        
+        
         
 def rotate_vector_and_image(x):
     with torch.no_grad():
@@ -163,10 +173,19 @@ class VectorToScalar(torch.nn.Module):
             self.bias = torch.nn.parameter.Parameter(torch.randn(out_channels)/np.sqrt(3.0))        
         else:
             self.bias = None
-    def forward(self,x):
-        # size 1 is a special case, just return 0 + bias
+            
         if x.shape[-1] == 1:
-            return torch.zeros(x.shape[0],self.out_channels,1,1,dtype=x.dtype,device=x.device) + self.bias[...,None,None]
+            self.forward = self.forwarde1
+        else:
+            self.forward = self.forwardg1
+    
+    def forwarde1(self,x):
+        # size 1 is a special case, just return 0 + bias
+        # self.ind is empty
+        return torch.zeros(x.shape[0],self.out_channels,1,1,dtype=x.dtype,device=x.device) + self.bias[...,None,None]
+    
+    def forwardg1(self,x):
+        
         # convert the weights into a kernel
         # we reshape from out x in x len(rs)
         # to
@@ -215,24 +234,30 @@ class VectorToVector(torch.nn.Module):
         
         self.weightsxx = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels*2))
         self.weightsidentity = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs))/np.sqrt(3*in_channels*2))
-             
-    def forward(self,x):
+        
+        # special case if kernel is size 1
+        print(x.shape)
+        if x.shape[-1] == 1:
+            self.forward = self.forwarde1
+        else:
+            self.forward = self.forwardg1
+    def forwarde1(self,x):
+        cidentity = torch.repeat_interleave(torch.repeat_interleave(self.weightsidentity[...,self.indsidentity],2,0),2,1)*self.identity
+        self.cidentity = cidentity
+        return torch.nn.functional.conv2d(x,cidentity)
+    def forwardg1(self,x):
         # convert the weights into a kernel
         # we reshape from out x in x len(rs)
         # to
         # out x in x kernel_size x kernel_size             
-        if x.shape[-1] == 1: # special case if the image is size 1
-            cidentity = torch.repeat_interleave(torch.repeat_interleave(self.weightsidentity[...,self.indsidentity],2,0),2,1)*self.identity
-            return torch.nn.functional.conv2d(x,cidentity)
-        else:
-            cxx = torch.repeat_interleave(torch.repeat_interleave(self.weightsxx,2,0),2,1)[...,self.indsxx]*self.XhatXhat
-            cidentity = torch.repeat_interleave(torch.repeat_interleave(self.weightsidentity,2,0),2,1)[...,self.indsidentity]*self.identity
-            c = cxx + cidentity
-            self.c = c
-            self.cxx = cxx
-            self.cidentity = cidentity
-            tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
-            return torch.nn.functional.conv2d(tmp,c) # no bias when output is vector
+        cxx = torch.repeat_interleave(torch.repeat_interleave(self.weightsxx,2,0),2,1)[...,self.indsxx]*self.XhatXhat
+        cidentity = torch.repeat_interleave(torch.repeat_interleave(self.weightsidentity,2,0),2,1)[...,self.indsidentity]*self.identity
+        c = cxx + cidentity
+        self.c = c
+        self.cxx = cxx
+        self.cidentity = cidentity
+        tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
+        return torch.nn.functional.conv2d(tmp,c) # no bias when output is vector
         
 class ScalarVectorToScalarVector(torch.nn.Module):
     def __init__(self, in_scalars, in_vectors, out_scalars, out_vectors, kernel_size, padding=0, bias=True, padding_mode='zeros'):
@@ -254,7 +279,7 @@ class ScalarVectorToScalarVector(torch.nn.Module):
         if in_vectors > 0 and out_vectors > 0:
             self.vv = VectorToVector(in_scalars, out_vectors, kernel_size, padding, padding_mode)
     def forward(self,x):
-        
+        # TODO implement this without if statements
         outs = torch.zeros((x.shape[0],self.out_scalars,x.shape[2],x.shape[3]),device=x.device,dtype=x.dtype)
         outv = torch.zeros((x.shape[0],self.out_vectors*2,x.shape[2],x.shape[3]),device=x.device,dtype=x.dtype)
         #print(outs.shape,outv.shape)
