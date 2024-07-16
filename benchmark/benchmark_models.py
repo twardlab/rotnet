@@ -10,6 +10,7 @@ sys.path.insert(0, parent_dir)
 import moment_kernels as mk
 importlib.reload(mk)
 
+import torch
 import torch.nn as tnn
 import torch.nn.functional as F
 
@@ -123,6 +124,7 @@ class TorchConvBlock(tnn.Module):
         self.block = tnn.Sequential(
             tnn.Conv2d(in_channels, out_channels, kernel_size = kernel_size, padding = padding, stride = stride),
             tnn.BatchNorm2d(out_channels),
+            # tnn.InstanceNorm2d(out_channels),
             tnn.ReLU(),
         )
 
@@ -134,6 +136,7 @@ class VanillaCNN(tnn.Module):
         super(VanillaCNN, self).__init__()
         self.img_channels = img_channels
         self.n_classes = n_classes
+        self.num_layers = num_layers
 
         # The input channels + number of channels at each stage of the network should double
         self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
@@ -157,6 +160,8 @@ class TrivialECNN(tnn.Module):
     def __init__(self, img_channels : int, n0 : int, n_classes : int, kernel_size = 3, padding = 1, num_layers : int = 4, N_equivariance : int = 4):
         super(TrivialECNN, self).__init__()
         self.in_type = None
+        self.n_classes = n_classes
+        self.num_layers = num_layers
 
         # The input channels + number of channels at each stage of the network should double
         self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
@@ -194,6 +199,8 @@ class TrivialIrrepECNN(tnn.Module):
     def __init__(self, img_channels : int, n0 : int, n_classes : int, kernel_size = 3, padding = 1, num_layers : int = 4, N_equivariance : int = 4):
         super(TrivialIrrepECNN, self).__init__()
         self.in_type = None
+        self.n_classes = n_classes
+        self.num_layers = num_layers
 
         # The input channels + number of channels at each stage of the network should double
         self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
@@ -233,6 +240,8 @@ class RegularECNN(tnn.Module):
     def __init__(self, img_channels : int, n0 : int, n_classes : int, kernel_size = 3, padding = 1, num_layers : int = 4, N_equivariance : int = 4):
         super(RegularECNN, self).__init__()
         self.in_type = None
+        self.n_classes = n_classes
+        self.num_layers = num_layers
 
         # The input channels + number of channels at each stage of the network should double
         self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
@@ -269,6 +278,8 @@ class RegularECNN(tnn.Module):
 class TrivialMoment(tnn.Module):
     def __init__(self, img_channels: int, n0: int, n_classes: int, kernel_size = 3, padding = 1, num_layers: int = 4):
         super(TrivialMoment, self).__init__()
+        self.n_classes = n_classes
+        self.num_layers = num_layers
 
         # The input channels + number of channels at each stage of the network should double
         self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
@@ -290,6 +301,8 @@ class TrivialMoment(tnn.Module):
 class TrivialIrrepMoment(tnn.Module):
     def __init__(self, img_channels: int, n0: int, n_classes: int, kernel_size = 3, padding = 1, num_layers: int = 4):
         super(TrivialIrrepMoment, self).__init__()
+        self.n_classes = n_classes
+        self.num_layers = num_layers
 
         # The input channels + number of channels at each stage of the network should double
         self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
@@ -313,3 +326,15 @@ class TrivialIrrepMoment(tnn.Module):
         x = x.view(x.size(0), -1)
         x = self.linear(x)
         return x
+
+def test_model(model: torch.nn.Module, device: torch.device, input_shape: tuple):
+    model.to(device).eval()
+    x = torch.randn(*input_shape).to(device)
+    with torch.no_grad():
+        y = model(x)
+    return y
+
+# count number of parameters
+def count_parameters(model):
+    model.train()
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
