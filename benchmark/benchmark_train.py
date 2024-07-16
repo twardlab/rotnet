@@ -6,10 +6,14 @@ import torch
 from medmnist import INFO
 import medmnist
 import argparse
+import numpy as np
 import time
 from tqdm import tqdm
 import json
 from comet_ml import Experiment
+from torch import profiler
+import sys
+import os
 
 PRESETS ={
     "VanillaCNN" : VanillaCNN,
@@ -26,13 +30,15 @@ experiment = Experiment(
     workspace="joeshmoe03",
 )
 
-def calculate_metrics(model, loader, criterion, device, num_classes):
+def calculate_metrics(model, loader, device, num_classes):
     model.eval()
-    acc_loss = 0
+    criterion = torch.nn.CrossEntropyLoss()
+    batch_losses = []
     acc = MulticlassAccuracy()
     precision = MulticlassPrecision()
     recall = MulticlassRecall()
     auroc = MulticlassAUROC(num_classes = num_classes)
+    n_batches = len(loader)
     
     with torch.no_grad():
         for images, labels in loader:
@@ -40,15 +46,15 @@ def calculate_metrics(model, loader, criterion, device, num_classes):
             labels = labels.to(device).squeeze(1)
             outputs = model(images)
             loss = criterion(outputs, labels)
-            acc_loss += loss.item()
+            batch_losses.append(loss.item())
             acc.update(outputs, labels)
             precision.update(outputs, labels)
             recall.update(outputs, labels)
             auroc.update(outputs, labels)
 
-    return acc_loss / len(loader), acc.compute().item(), precision.compute().item(), recall.compute().item(), auroc.compute().item()
+    return np.mean(batch_losses), acc.compute().item(), precision.compute().item(), recall.compute().item(), auroc.compute().item()
 
-def main(args):
+def load_data(args):
 
     data_flag = args.data_flag
     download = True
@@ -78,42 +84,47 @@ def main(args):
     train_loader = data.DataLoader(dataset = train_dataset, batch_size = args.batch_size, shuffle = True)
     valid_loader = data.DataLoader(dataset = valid_dataset, batch_size = args.batch_size, shuffle = False)
     test_loader = data.DataLoader(dataset = test_dataset, batch_size = args.batch_size, shuffle = False)
-    n_batches = len(train_loader)
 
-    # model can be any of the models in the benchmark_models.py file
+    return train_loader, valid_loader, test_loader, img_channels, n_classes, device
+
+metrics = {
+    "train_losses": [],
+    "valid_losses": [],
+    "valid_accuracies": [],
+    "valid_precision": [],
+    "valid_recall": [],
+    "valid_AUCROC": [],
+    "best_acc": 0,
+    "best_auc": 0,
+    "best_acc_on_best_auc": 0,
+    "best_auc_on_best_acc": 0,
+    "epoch_times": [],
+    "final_acc": 0,
+    "final_auc": 0
+}
+
+def main(args):
+    train_loader, valid_loader, test_loader, img_channels, n_classes, device = load_data(args)
     model = PRESETS[args.model](img_channels, args.n_channels, n_classes, args.kernel_size, args.padding, args.num_layers).to(device)
-
-    # our optimizer is Adam
     optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
-
-    # our loss function is CrossEntropyLoss
     criterion = torch.nn.CrossEntropyLoss()
+    prof = profiler.profile(
+        activities = [profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
+        profile_memory = True,
+        with_flops = True,
+    )
 
-    epoch_times = []
-    train_losses = []
-    valid_losses = []
-    valid_accuracies = []
-    valid_AUCROC = []
-    valid_precision = []
-    valid_recall = []
-    best_acc = 0
-    best_auc = 0
-    final_acc = 0
-    final_auc = 0
-    best_acc_on_best_auc = 0
-    best_auc_on_best_acc = 0
-
-    # training loop
+    # training loop and profiling
+    prof.start()
     for epoch in range(args.epochs):
         model.train()
 
         # start timing the epoch
         start_time = time.time()
-        pbar = tqdm(train_loader, unit = "batches")
 
-        #tqdm is a progress bar with units in batches
-        for i, (images, labels) in enumerate(pbar):
-            acc_loss = 0
+        # loop through the batches
+        for i, (images, labels) in enumerate(train_loader):
+            batch_losses = []
 
             # images to configured device. NOTE: labels squeezed for every dataset?
             images = images.to(device)
@@ -125,79 +136,69 @@ def main(args):
             # forward pass and backward pass
             outputs = model(images)
             loss = criterion(outputs, labels)
+            batch_losses.append(loss.item())
             loss.backward()
             optimizer.step()
-
-            # update progress bar
-            pbar.set_postfix({"loss": loss.item()})
-            pbar.update()
-            acc_loss += loss.item()
         
         # end timing the epoch save the duration
         end_time = time.time()
-        epoch_times.append(end_time - start_time)
-        train_losses.append(acc_loss / n_batches)
+        metrics["epoch_times"].append(end_time - start_time)
+        metrics["train_losses"].append(np.mean(batch_losses))
 
         # validation loop: evaluate at given interval or at the end
         if epoch % args.val_interval == 0 or epoch == args.epochs - 1:
             model.eval()
-            valid_loss, valid_acc, valid_prec, valid_rec, valid_auc = calculate_metrics(model, valid_loader, criterion, device, n_classes)
+            valid_loss, valid_acc, valid_prec, valid_rec, valid_auc = calculate_metrics(model, valid_loader, device, n_classes)
 
-            if valid_acc > best_acc:
-                best_acc = valid_acc
-                best_auc_on_best_acc = valid_auc
-                torch.save(model.state_dict(), f"best_acc_{args.model}_{data_flag}.pt")
-            if valid_auc > best_auc:
-                best_auc = valid_auc
-                best_acc_on_best_auc = valid_acc
-                torch.save(model.state_dict(), f"best_auc_{args.model}_{data_flag}.pt")
+            if valid_acc > metrics["best_acc"]:
+                metrics["best_acc"] = valid_acc
+                metrics["best_auc_on_best_acc"] = valid_auc
+                if args.save_on_best in ["acc", "acc_auc", "all"]:
+                    path = os.path.join(f"run{args.run}", f"best_acc_{args.model}_{args.data_flag}{args.run}.pt")
+                    torch.save(model.state_dict(), path)
+            if valid_auc > metrics["best_auc"]:
+                metrics["best_auc"] = valid_auc
+                metrics["best_acc_on_best_auc"] = valid_acc
+                if args.save_on_best in ["auc", "acc_auc", "all"]:
+                    path = os.path.join(f"run{args.run}", f"best_auc_{args.model}_{args.data_flag}{args.run}.pt")
+                    torch.save(model.state_dict(), path)
 
-            valid_losses.append(valid_loss)
-            valid_accuracies.append(valid_acc)
-            valid_precision.append(valid_prec)
-            valid_recall.append(valid_rec)
-            valid_AUCROC.append(valid_auc)
-
-            pbar.set_postfix({"loss": loss.item(), "val_loss": valid_loss, "val_acc": valid_acc, "val_auc": valid_auc})
-            pbar.update()
+            metrics['valid_losses'].append(valid_loss)
+            metrics['valid_accuracies'].append(valid_acc)
+            metrics['valid_precision'].append(valid_prec)
+            metrics['valid_recall'].append(valid_rec)
+            metrics['valid_AUCROC'].append(valid_auc)
 
             if epoch == args.epochs - 1:
-                final_acc = valid_acc
-                final_auc = valid_auc
-                torch.save(model.state_dict(), f"final_{args.model}_{data_flag}.pt")
+                metrics["final_acc"] = valid_acc
+                metrics["final_auc"] = valid_auc
+                if args.save_on_best in ["final", "all"]:
+                    path = os.path.join(f"run{args.run}", f"final_{args.model}_{args.data_flag}{args.run}.pt")
+                    torch.save(model.state_dict(), path)
 
-        # log the metrics to comet
-        experiment.log_metric("train_loss", acc_loss / n_batches)
-        experiment.log_metric("val_loss", valid_loss)
-        experiment.log_metric("val_acc", valid_acc)
-        experiment.log_metric("val_auc", valid_auc)
-        experiment.log_metric("val_prec", valid_prec)
-        experiment.log_metric("val_rec", valid_rec)
-        
-    # Save all the metrics as a dictionary
-    metrics = {
-        "train_losses": train_losses,
-        "valid_losses": valid_losses,
-        "valid_accuracies": valid_accuracies,
-        "valid_precision": valid_precision,
-        "valid_recall": valid_recall,
-        "valid_AUCROC": valid_AUCROC,
-        "best_acc": best_acc,
-        "best_auc": best_auc,
-        "best_acc_on_best_auc": best_acc_on_best_auc,
-        "best_auc_on_best_acc": best_auc_on_best_acc,
-        "epoch_times": epoch_times,
-        "final_acc": final_acc,
-        "final_auc": final_auc
-    }
+            # log the metrics to comet
+            experiment.log_metric("train_loss", np.mean(metrics["train_losses"]))
+            experiment.log_metric("val_loss", valid_loss)
+            experiment.log_metric("val_acc", valid_acc)
+            experiment.log_metric("val_auc", valid_auc)
+            experiment.log_metric("val_prec", valid_prec)
+            experiment.log_metric("val_rec", valid_rec)
+
+    # Stop the profiler
+    prof.stop()
 
     # Save the metrics to a file
-    with open(f"metrics_{args.model}_{data_flag}.json", "w") as f:
+    path = os.path.join(f"run{args.run}", f"metrics_{args.model}_{args.data_flag}{args.run}.json")
+    with open(path, "w") as f:
         json.dump(metrics, f)
+
+    # Save the profile to a file
+    path = os.path.join(f"run{args.run}", f"profile_{args.model}_{args.data_flag}{args.run}.json")
+    prof.export_chrome_trace(path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_flag", type = str, action = "store", dest = "data_flag", default = "dermamnist", help = "The dataset to use")
+    parser.add_argument("--data_flag", type = str, action = "store", dest = "data_flag", default = "bloodmnist", help = "The dataset to use: pathmnist, dermamnist, bloodmnist, etc...")
     parser.add_argument("--model", type = str, action = "store", dest = "model", default = "VanillaCNN", help = "The model to use")
     parser.add_argument("--batch_size", type = int, action = "store", dest = "batch_size", default = 128, help = "The batch size to use")
     parser.add_argument("--n_channels", type = int, action = "store", dest = "n_channels", default = 32, help = "The number of channels to use")
@@ -207,5 +208,13 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type = int, action = "store", dest = "epochs", default = 100, help = "The number of epochs to use")
     parser.add_argument("--lr", type = float, action = "store", dest = "lr", default = 1e-4, help = "The learning rate to use")
     parser.add_argument("--val_interval", type = int, action = "store", dest = "val_interval", default = 1, help = "The validation interval to use")
+    parser.add_argument("--save_on_best", type = str, action = "store", dest = "save_on_best", default = "acc", help = "Whether to save on best: acc, auc, acc_auc, final, all")
+    parser.add_argument("--run", type = int, action = "store", dest = "run", default = 0, help = "The run number to use")
     args = parser.parse_args()
+    
+    cwd = os.getcwd()
+    path = os.path.join(cwd, f"run{args.run}")
+    if not os.path.exists(path):
+        os.makedirs(path)
+
     main(args)
