@@ -54,4 +54,4 @@ benchmark/old_results/metrics_TrivialMoment_dermamnist0.json
 benchmark/old_results/metrics_VanillaCNN_dermamnist.json
 benchmark/old_results/metrics_VanillaCNN_dermamnist0.json
 benchmark/.ipynb_checkpoints/benchmark-checkpoint.ipynb
-run*
+results

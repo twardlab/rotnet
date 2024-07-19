@@ -124,7 +124,6 @@ class TorchConvBlock(tnn.Module):
         self.block = tnn.Sequential(
             tnn.Conv2d(in_channels, out_channels, kernel_size = kernel_size, padding = padding, stride = stride),
             tnn.BatchNorm2d(out_channels),
-            # tnn.InstanceNorm2d(out_channels),
             tnn.ReLU(),
         )
 
