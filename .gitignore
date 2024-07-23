@@ -56,3 +56,10 @@ benchmark/old_results/metrics_VanillaCNN_dermamnist0.json
 benchmark/.ipynb_checkpoints/benchmark-checkpoint.ipynb
 results
 benchmark/.cometml-runs/d6b5f5a7741b45c6957280edf8e1972f-TJVUSC.zip
+benchmark/generate_figures.py
+benchmark/figures.sh
+benchmark/figures.log
+benchmark/__pycache__/E2CNN_models.cpython-39.pyc
+benchmark/testing.ipynb
+benchmark/benchfigures.sh
+benchmark/benchtrain.sh
