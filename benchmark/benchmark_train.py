@@ -1,4 +1,4 @@
-from benchmark_models import *
+from benchmark_models2 import *
 import torchvision.transforms as transforms
 from torcheval.metrics import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassAUROC
 import torch.utils.data as data
@@ -34,10 +34,10 @@ def calculate_metrics(model, loader, device, num_classes):
     model.eval()
     criterion = torch.nn.CrossEntropyLoss()
     batch_losses = []
-    acc = MulticlassAccuracy()
-    precision = MulticlassPrecision()
-    recall = MulticlassRecall()
-    auroc = MulticlassAUROC(num_classes = num_classes)
+    acc = MulticlassAccuracy(num_classes=num_classes, device=device)
+    precision = MulticlassPrecision(num_classes=num_classes, device=device)
+    recall = MulticlassRecall(num_classes=num_classes, device=device)
+    auroc = MulticlassAUROC(num_classes=num_classes, device=device)
     n_batches = len(loader)
     
     with torch.no_grad():
@@ -52,7 +52,18 @@ def calculate_metrics(model, loader, device, num_classes):
             recall.update(outputs, labels)
             auroc.update(outputs, labels)
 
-    return np.mean(batch_losses), acc.compute().item(), precision.compute().item(), recall.compute().item(), auroc.compute().item()
+    valid_loss = np.mean(batch_losses)
+    valid_acc = acc.compute().item()
+    valid_precision = precision.compute().item()
+    valid_recall = recall.compute().item()
+    valid_auroc = auroc.compute().item()
+
+    acc.reset()
+    precision.reset()
+    recall.reset()
+    auroc.reset()
+
+    return valid_loss, valid_acc, valid_precision, valid_recall, valid_auroc
 
 class CircleCrop(object):
     def __init__(self, h, w, center=None, radius=None):
@@ -62,7 +73,6 @@ class CircleCrop(object):
         self.radius = radius
 
     def __call__(self, img):
-        # n_channels x h x w    
         if self.center is None:
             self.center = (self.h // 2, self.w // 2)
         if self.radius is None:
@@ -91,24 +101,24 @@ def load_data(args):
     # transforms to convert from image to normalized tensor (or more if augmentation, but not for testing purposes)
     train_transforms = transforms.Compose([
         transforms.ToTensor(),
-        CircleCrop(28, 28, radius = 14, center = (13.5, 13.5)),
-        transforms.Normalize(mean = [0.5], std = [0.5]),
+        #CircleCrop(28, 28, radius = 14, center = (13.5, 13.5)),
+        transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
 
     # separate transforms for test
     test_transforms = transforms.Compose([
         transforms.ToTensor(),
-        CircleCrop(28, 28, radius = 14, center = (13.5, 13.5)),
-        transforms.Normalize(mean = [0.5], std = [0.5])
+        #CircleCrop(28, 28, radius = 14, center = (13.5, 13.5)),
+        transforms.Normalize(mean=[0.5], std=[0.5])
     ])
 
-    train_dataset = DataClass(split = "train", transform = train_transforms, download = download)
-    valid_dataset = DataClass(split = "val", transform = test_transforms, download = download)
-    test_dataset = DataClass(split = "test", transform = test_transforms, download = download)
+    train_dataset = DataClass(split="train", transform=train_transforms, download=download)
+    valid_dataset = DataClass(split="val", transform=test_transforms, download=download)
+    test_dataset = DataClass(split="test", transform=test_transforms, download=download)
 
-    train_loader = data.DataLoader(dataset = train_dataset, batch_size = args.batch_size, shuffle = True, drop_last = True)
-    valid_loader = data.DataLoader(dataset = valid_dataset, batch_size = args.batch_size, shuffle = True)
-    test_loader = data.DataLoader(dataset = test_dataset, batch_size = args.batch_size, shuffle = True)
+    train_loader = data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    valid_loader = data.DataLoader(dataset=valid_dataset, batch_size=args.batch_size, shuffle=True)
+    test_loader = data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, shuffle=True)
 
     return train_loader, valid_loader, test_loader, img_channels, n_classes, device
 
@@ -147,12 +157,12 @@ class Metrics():
 def main(args):
     train_loader, valid_loader, test_loader, img_channels, n_classes, device = load_data(args)
     model = PRESETS[args.model](img_channels, args.n_channels, n_classes, args.kernel_size, args.padding, args.num_layers).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
     metrics = Metrics()
 
     # initialize the metrics
-    metrics.update(best_acc = 0, best_auc = 0, auc_on_best_acc = 0, acc_on_best_auc = 0, final_acc = 0, final_auc = 0)
+    metrics.update(best_acc=0, best_auc=0, auc_on_best_acc=0, acc_on_best_auc=0, final_acc=0, final_auc=0)
 
     # training loop
     for epoch in range(args.epochs):
@@ -189,31 +199,31 @@ def main(args):
             model.eval()
 
             valid_loss, valid_acc, valid_prec, valid_rec, valid_auc = calculate_metrics(model, valid_loader, device, n_classes)
-            metrics.append(train_losses = train_loss, 
-                           valid_losses = valid_loss, 
-                           valid_accuracies = valid_acc, 
-                           valid_precision = valid_prec, 
-                           valid_recall = valid_rec, 
-                           valid_AUCROC = valid_auc, 
-                           epoch_times = total_time)
+            metrics.append(train_losses=train_loss, 
+                           valid_losses=valid_loss, 
+                           valid_accuracies=valid_acc, 
+                           valid_precision=valid_prec, 
+                           valid_recall=valid_rec, 
+                           valid_AUCROC=valid_auc, 
+                           epoch_times=total_time)
 
             if valid_acc > metrics.metrics["best_acc"]:
-                metrics.update(best_acc = valid_acc, 
-                               auc_on_best_acc = valid_auc)
+                metrics.update(best_acc=valid_acc, 
+                               auc_on_best_acc=valid_auc)
                 if args.save_on_best in ["acc", "acc_auc", "all"]:
                     path = os.path.join("results", f"{args.data_flag}", f"run{args.run}", f"best_acc_{args.model}_{args.data_flag}{args.run}.pt")
                     torch.save(model.state_dict(), path)
 
             if valid_auc > metrics.metrics["best_auc"]:
-                metrics.update(best_auc = valid_auc, 
-                               acc_on_best_auc = valid_acc)
+                metrics.update(best_auc=valid_auc, 
+                               acc_on_best_auc=valid_acc)
                 if args.save_on_best in ["auc", "acc_auc", "all"]:
                     path = os.path.join("results", f"{args.data_flag}", f"run{args.run}", f"best_auc_{args.model}_{args.data_flag}{args.run}.pt")
                     torch.save(model.state_dict(), path)
 
             if epoch == args.epochs - 1:
-                metrics.update(final_acc = valid_acc, 
-                               final_auc = valid_auc)
+                metrics.update(final_acc=valid_acc, 
+                               final_auc=valid_auc)
                 if args.save_on_best in ["final", "all"]:
                     path = os.path.join("results", f"{args.data_flag}", f"run{args.run}", f"final_{args.model}_{args.data_flag}{args.run}.pt")
                     torch.save(model.state_dict(), path)
@@ -233,18 +243,18 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_flag", type = str, action = "store", dest = "data_flag", default = "bloodmnist", help = "The dataset to use: pathmnist, dermamnist, bloodmnist, etc...")
-    parser.add_argument("--model", type = str, action = "store", dest = "model", default = "VanillaCNN", help = "The model to use")
-    parser.add_argument("--batch_size", type = int, action = "store", dest = "batch_size", default = 128, help = "The batch size to use")
-    parser.add_argument("--n_channels", type = int, action = "store", dest = "n_channels", default = 32, help = "The number of channels to use")
-    parser.add_argument("--kernel_size", type = int, action = "store", dest = "kernel_size", default = 3, help = "The kernel size to use")  
-    parser.add_argument("--padding", type = int, action = "store", dest = "padding", default = 1, help = "The padding to use")
-    parser.add_argument("--num_layers", type = int, action = "store", dest = "num_layers", default = 5, help = "The number of layers to use")
-    parser.add_argument("--epochs", type = int, action = "store", dest = "epochs", default = 100, help = "The number of epochs to use")
-    parser.add_argument("--lr", type = float, action = "store", dest = "lr", default = 1e-4, help = "The learning rate to use")
-    parser.add_argument("--val_interval", type = int, action = "store", dest = "val_interval", default = 1, help = "The validation interval to use")
-    parser.add_argument("--save_on_best", type = str, action = "store", dest = "save_on_best", default = "acc", help = "Whether to save on best: acc, auc, acc_auc, final, all")
-    parser.add_argument("--run", type = int, action = "store", dest = "run", default = 0, help = "The run number to use")
+    parser.add_argument("--data_flag", type=str, action="store", dest="data_flag", default="bloodmnist", help="The dataset to use: pathmnist, dermamnist, bloodmnist, etc...")
+    parser.add_argument("--model", type=str, action="store", dest="model", default="VanillaCNN", help="The model to use")
+    parser.add_argument("--batch_size", type=int, action="store", dest="batch_size", default=128, help="The batch size to use")
+    parser.add_argument("--n_channels", type=int, action="store", dest="n_channels", default=32, help="The number of channels to use")
+    parser.add_argument("--kernel_size", type=int, action="store", dest="kernel_size", default=3, help="The kernel size to use")  
+    parser.add_argument("--padding", type=int, action="store", dest="padding", default=1, help="The padding to use")
+    parser.add_argument("--num_layers", type=int, action="store", dest="num_layers", default=5, help="The number of layers to use")
+    parser.add_argument("--epochs", type=int, action="store", dest="epochs", default=100, help="The number of epochs to use")
+    parser.add_argument("--lr", type=float, action="store", dest="lr", default=1e-4, help="The learning rate to use")
+    parser.add_argument("--val_interval", type=int, action="store", dest="val_interval", default=1, help="The validation interval to use")
+    parser.add_argument("--save_on_best", type=str, action="store", dest="save_on_best", default="acc", help="Whether to save on best: acc, auc, acc_auc, final, all")
+    parser.add_argument("--run", type=int, action="store", dest="run", default=0, help="The run number to use")
     args = parser.parse_args()
     
     cwd = os.getcwd()
