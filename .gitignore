@@ -64,3 +64,4 @@ benchmark/testing.ipynb
 benchmark/benchfigures.sh
 benchmark/benchtrain.sh
 benchmark/__pycache__/benchmark_models2.cpython-39.pyc
+data
