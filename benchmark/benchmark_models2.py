@@ -16,6 +16,60 @@ import torch.nn.functional as F # type: ignore
 import escnn.nn as enn # type: ignore
 import escnn.gspaces as gspaces # type: ignore
 
+class MomentConvBlock(tnn.Module):
+    def __init__(self, in_scalars : int, in_vectors : int, out_scalars : int, out_vectors : int, kernel_size, padding, map_type = 'scalar_vector_to_scalar_vector'):
+        super(MomentConvBlock, self).__init__()
+        self.layers_list = tnn.ModuleList()
+
+        self.CONV_MAPPINGS = {
+            'scalar_vector_to_scalar_vector': mk.ScalarVectorToScalarVector(in_scalars, in_vectors, out_scalars, out_vectors, kernel_size, padding),
+            'scalar_to_scalar': mk.ScalarToScalar(in_scalars, out_scalars, kernel_size, padding),
+            'scalar_to_vector': mk.ScalarToVector(in_scalars, out_vectors, kernel_size, padding),
+            'vector_to_vector': mk.VectorToVector(in_vectors, out_vectors, kernel_size, padding),
+            'vector_to_scalar': mk.VectorToScalar(in_vectors, out_scalars, kernel_size, padding),
+        }
+        self.BN_MAPPINGS = {
+            'scalar_vector_to_scalar_vector': mk.ScalarVectorBatchnorm(out_scalars, out_vectors),
+            'scalar_to_scalar': mk.ScalarBatchnorm(out_scalars),
+            'scalar_to_vector': mk.VectorBatchnorm(out_vectors),
+            'vector_to_vector': mk.VectorBatchnorm(out_vectors),
+            'vector_to_scalar': mk.ScalarBatchnorm(out_scalars),
+        }
+        self.SIG_MAPPINGS = {
+            'scalar_vector_to_scalar_vector': mk.ScalarVectorSigmoid(out_scalars),
+            'scalar_to_scalar': mk.ScalarSigmoid(),
+            'scalar_to_vector': mk.VectorSigmoid(),
+            'vector_to_vector': mk.VectorSigmoid(),
+            'vector_to_scalar': mk.ScalarSigmoid(),
+        }
+
+        # if the input and output scalars and vectors are the same, then we do not need to downsample
+        self.layers_list.append(self.CONV_MAPPINGS[map_type])
+        if in_scalars != out_scalars or in_vectors != out_vectors:
+            self.layers_list.append(mk.Downsample())
+        self._add_bn_sigmoid(map_type, out_scalars, out_vectors)
+        self.block = tnn.Sequential(*self.layers_list)
+
+    def _add_bn_sigmoid(self, map_type, out_scalars, out_vectors):
+        bn_mapping = self.BN_MAPPINGS[map_type]
+        sig_mapping = self.SIG_MAPPINGS[map_type]
+        
+        # We need this conditional for situations of scalar_vector_to_scalar_vector where the output is either all scalars or all vectors
+        # such that we can use the appropriate batchnorm and sigmoid functions.
+        if map_type == 'scalar_vector_to_scalar_vector':
+            if out_vectors == 0:
+                bn_mapping = self.BN_MAPPINGS['scalar_to_scalar']
+                sig_mapping = self.SIG_MAPPINGS['scalar_to_scalar']
+            elif out_scalars == 0:
+                bn_mapping = self.BN_MAPPINGS['vector_to_vector']
+                sig_mapping = self.SIG_MAPPINGS['vector_to_vector']
+
+        self.layers_list.append(bn_mapping)
+        self.layers_list.append(sig_mapping)
+
+    def forward(self, x):
+        return self.block(x)
+
 class TorchConvBlock(tnn.Module):
     def __init__(self, in_channels : int, out_channels : int, kernel_size, padding):
         super(TorchConvBlock, self).__init__()
@@ -95,9 +149,9 @@ class ECNNConvBlock(enn.EquivariantModule):
         vector_type = enn.FieldType(group, vector_fields) if len(vector_fields) > 0 else None
         non_vector_type = enn.FieldType(group, non_vector_fields) if len(non_vector_fields) > 0 else None
 
-        # create the appropriate equivariant layers. Motivation: we must be very picky which nonlinearity to use with which field type. Vector fields require NormReLU, non-vector fields can use ReLU
+        # NOTE: Motivation: we must be very picky which nonlinearity to use with which field type. Vector fields require NormReLU, non-vector fields can use ReLU
         # Under mixed representations, we must use MultipleModule to handle the different types of nonlinearities accordingly. A consequence of this implementation is that in the model itself
-        # we must first declare non-vector fields and then vector fields. This is because the MultipleModule will maintain the nonlinearities in the order they are declared.
+        # we must first declare non-vector fields and then vector fields in a given FieldType. The order of declaration matters with MultipleModule and out_type
         if vector_type is not None and non_vector_type is not None:
             norm_relu = enn.NormNonLinearity(vector_type)
             relu = enn.ReLU(non_vector_type)
@@ -245,7 +299,71 @@ class RegularECNN(tnn.Module):
         x = x.reshape(x.size(0), -1)
         x = self.linear(x)
         return x
+
+class TrivialMoment(tnn.Module):
+    def __init__(self, img_channels: int, n0: int, num_classes: int, kernel_size = 3, padding = 1, num_layers: int = 4):
+        super(TrivialMoment, self).__init__()
+        self.num_classes = num_classes
+        self.num_layers = num_layers
+
+        # The input channels + number of channels at each stage of the network should double
+        self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
+        self.layers_list = tnn.ModuleList()
+
+        for i in range(num_layers):
+            self.layers_list.append(MomentConvBlock(self.stages[i], 0, self.stages[i + 1], 0, kernel_size, padding, map_type = 'scalar_to_scalar'))
+
+        self.layers = tnn.Sequential(*self.layers_list)
+        self.linear = tnn.Linear(self.stages[-1], num_classes)
+        
+    def forward(self, x):
+        x = self.layers(x)
+        x = F.adaptive_avg_pool2d(x, 1)
+        x = x.view(x.size(0), -1)
+        x = self.linear(x)
+        return x
     
+class TrivialIrrepMoment(tnn.Module):
+    def __init__(self, img_channels: int, n0: int, num_classes: int, kernel_size = 3, padding = 1, num_layers: int = 4):
+        super(TrivialIrrepMoment, self).__init__()
+        self.num_classes = num_classes
+        self.num_layers = num_layers
+
+        # The input channels + number of channels at each stage of the network should double
+        self.stages = [img_channels] + [n0 * (2 ** i) for i in range(num_layers)]
+        self.layers_list = tnn.ModuleList()
+
+        # The input of first layer should be trivial only. The output of last layer should be trivial only. Intermediate layers should be both trivial and irrep.
+        for i in range(num_layers):
+            if i == 0:
+                self.layers_list.append(MomentConvBlock(self.stages[i], 0, self.stages[i + 1] // 2, self.stages[i + 1] // 2, kernel_size, padding, map_type = 'scalar_vector_to_scalar_vector'))
+            elif i == num_layers - 1:
+                self.layers_list.append(MomentConvBlock(self.stages[i] // 2, self.stages[i] // 2, self.stages[i + 1], 0, kernel_size, padding, map_type = 'scalar_vector_to_scalar_vector'))
+            else:
+                self.layers_list.append(MomentConvBlock(self.stages[i] // 2, self.stages[i] // 2, self.stages[i + 1] // 2, self.stages[i + 1] // 2, kernel_size, padding, map_type = 'scalar_vector_to_scalar_vector'))
+
+        self.layers = tnn.Sequential(*self.layers_list)
+        self.linear = tnn.Linear(self.stages[-1], num_classes)
+        
+    def forward(self, x):
+        x = self.layers(x)
+        x = F.adaptive_avg_pool2d(x, 1)
+        x = x.view(x.size(0), -1)
+        x = self.linear(x)
+        return x
+
+def test_model(model: torch.nn.Module, device: torch.device, input_shape: tuple):
+    model.to(device).eval()
+    x = torch.randn(*input_shape).to(device)
+    with torch.no_grad():
+        y = model(x)
+    return y
+
+# count number of parameters
+def count_parameters(model):
+    model.train()
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def test_model(model: torch.nn.Module, device: torch.device, input_shape: tuple):
     model.to(device).eval()
     x = torch.randn(*input_shape).to(device)
