@@ -33,3 +33,5 @@ benchmark/scripts/figures.log
 benchmark/scripts/benchfigures.sh
 benchmark/scripts/train.sh
 utils/__pycache__/data.cpython-39.pyc
+models/__pycache__/__init__.cpython-39.pyc
+models/__pycache__/benchmark_models2.cpython-39.pyc

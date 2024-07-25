@@ -1,4 +1,13 @@
-from benchmark_models2 import *
+import sys
+import os
+
+current_dir = os.path.dirname(os.path.realpath(__file__))
+parent_dir = os.path.dirname(current_dir)
+root_dir = os.path.dirname(parent_dir)
+sys.path.insert(0, root_dir)
+sys.path.insert(0, parent_dir)
+
+from models.benchmark_models2 import *
 import torchvision.transforms as transforms
 from torcheval.metrics import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassAUROC
 import torch.utils.data as data
@@ -12,8 +21,6 @@ from tqdm import tqdm
 import json
 from comet_ml import Experiment
 from torch import profiler
-import sys
-import os
 
 PRESETS ={
     "VanillaCNN" : VanillaCNN,
@@ -258,7 +265,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     cwd = os.getcwd()
-    path = os.path.join(cwd, "results", f"{args.data_flag}", f"run{args.run}")
+    parent_dir = os.path.dirname(cwd)
+    os.chdir(parent_dir)
+    path = os.path.join(parent_dir, "results", f"{args.data_flag}", f"run{args.run}")
+    print(f"Path: {path}")
     if not os.path.exists(path):
         os.makedirs(path)
 
