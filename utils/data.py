@@ -3,7 +3,9 @@ import torch
 from torch.utils.data import Dataset
 
 import os
+import re
 
+import csv
 import math
 import random as rand
 from tqdm import tqdm
@@ -120,7 +122,7 @@ class ExtractROI():
         np.savez(os.path.join(sub_dir, f'{npz_name}._{coords[0]}_{coords[1]}_{self.label_mode}.npz'), I=rois, L=lbls)
 
 class AtlasDataset(Dataset):
-    def __init__(self, data_dir, transform=None, target_transform=None):
+    def __init__(self, data_dir, transform=None, target_transform=None, label_map_file=None or str):
         '''
         Args:
         data_dir (str): 
@@ -129,16 +131,62 @@ class AtlasDataset(Dataset):
             A function/transform that takes in the image data and returns a transformed version
         target_transform (callable, optional):
             A function/transform that takes in the label data and returns a transformed version
+        label_map_file (str, optional):
+            The path to the csv file containing the level label data mapped to the corresponding string name and index
+            These should be divisions.csv, organs.csv, structures.csv, substructures.csv, categories.csv
+            and contain | number  name, indices | (e.g. 1, 'brain', [0])
         '''
         self.data_dir = data_dir
         self.transform = transform
         self.target_transform = target_transform
+        self.label_map_file = label_map_file
+        self.label_map = self._map_label(self.label_map_file)
 
+        # Check if the label map file exists and is a csv file
+        if self.label_map_file is not None:
+            assert os.path.exists(self.label_map_file), f'Label map file {self.label_map_file} does not exist'
+            assert os.path.isfile(self.label_map_file), f'Path {self.label_map_file} is not a file'
+            assert self.label_map_file.endswith('.csv'), f'Label map file {self.label_map_file} is not a csv file'
+
+        # Check if the data directory exists and is a directory, and if it is not empty
         assert os.path.exists(self.data_dir), f'Directory {self.data_dir} does not exist'
         assert os.path.isdir(self.data_dir), f'Path {self.data_dir} is not a directory'
         assert len(self) > 0, f'Directory {self.data_dir} is empty'
 
         self.data_dirs = os.listdir(self.data_dir)
+
+    def _map_label(self, file):
+        '''
+        Maps the label data to the corresponding string name and index
+        
+        Args:
+        file (str):
+            The path to the csv file containing the label data
+            
+        Returns:
+        label_map (dict):
+            A dictionary containing the label data mapped to the corresponding string name and index
+            Our label_map will consists of {label: {name: str, index: int}} where label is the parcellation value, 
+            name is the string name, and index is the index that we will use as label
+        '''
+        with open(file, 'r') as f:
+            reader = csv.reader(f)
+            next(reader)
+            label_map = {}
+
+            # Remove any unwanted characters from the label data and convert to a list of integers
+            for row in reader:
+                rep = {'\n': '', '\t': '', ']': '', '[': ''}
+                rep = dict((re.escape(k), v) for k, v in rep.items())
+                pattern = re.compile("|".join(rep.keys()))
+                row[2] = row[2].strip()
+                row[2] = pattern.sub(lambda m: rep[re.escape(m.group(0))], row[2])
+                row[2] = row[2].split(' ')
+                row[2] = [i for i in row[2] if i not in ['']]
+                row[2] = [int(i) for i in row[2]]
+                for value in row[2]:
+                    label_map[value] = {'name': row[1], 'index': int(row[0])}
+        return label_map
 
     def __len__(self):
         '''
@@ -163,6 +211,10 @@ class AtlasDataset(Dataset):
         # into val & test are done on test data - not train).
         if self.transform:
             I = self.transform(I)
+
+        if self.label_map is not None:
+            for label in np.unique(L):
+                L[L == label] = self.label_map[label]['index']
 
         if self.target_transform:
             L = self.target_transform(L)
