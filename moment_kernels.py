@@ -236,7 +236,7 @@ class VectorToVector(torch.nn.Module):
         self.weightsidentity = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs))/np.sqrt(3*in_channels*2))
         
         # special case if kernel is size 1
-        print(x.shape)
+        # print(x.shape)
         if x.shape[-1] == 1:
             self.forward = self.forwarde1
         else:
