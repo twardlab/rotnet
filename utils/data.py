@@ -212,6 +212,7 @@ class AtlasDataset(Dataset):
         if self.transform:
             I = self.transform(I)
 
+        # Map the label data to the corresponding index
         if self.label_map is not None:
             for label in np.unique(L):
                 L[L == label] = self.label_map[label]['index']
