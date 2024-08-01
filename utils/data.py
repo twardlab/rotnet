@@ -122,7 +122,7 @@ class ExtractROI():
         np.savez(os.path.join(sub_dir, f'{npz_name}._{coords[0]}_{coords[1]}_{self.label_mode}.npz'), I=rois, L=lbls)
 
 class AtlasDataset(Dataset):
-    def __init__(self, data_dir, transform=None, target_transform=None, label_map_file=None or str):
+    def __init__(self, data_dir : str, label_map_file : str, transform=None, target_transform=None):
         '''
         Args:
         data_dir (str): 
@@ -131,22 +131,24 @@ class AtlasDataset(Dataset):
             A function/transform that takes in the image data and returns a transformed version
         target_transform (callable, optional):
             A function/transform that takes in the label data and returns a transformed version
-        label_map_file (str, optional):
+        label_map_file (str):
             The path to the csv file containing the level label data mapped to the corresponding string name and index
             These should be divisions.csv, organs.csv, structures.csv, substructures.csv, categories.csv
             and contain | number  name, indices | (e.g. 1, 'brain', [0])
         '''
+
         self.data_dir = data_dir
         self.transform = transform
         self.target_transform = target_transform
         self.label_map_file = label_map_file
-        self.label_map = self._map_label(self.label_map_file)
+        self.num_classes = None
 
         # Check if the label map file exists and is a csv file
-        if self.label_map_file is not None:
-            assert os.path.exists(self.label_map_file), f'Label map file {self.label_map_file} does not exist'
-            assert os.path.isfile(self.label_map_file), f'Path {self.label_map_file} is not a file'
-            assert self.label_map_file.endswith('.csv'), f'Label map file {self.label_map_file} is not a csv file'
+        assert os.path.exists(self.label_map_file), f'Label map file {self.label_map_file} does not exist'
+        assert os.path.isfile(self.label_map_file), f'Path {self.label_map_file} is not a file'
+        assert self.label_map_file.endswith('.csv'), f'Label map file {self.label_map_file} is not a csv file'
+
+        self.label_map = self._map_label(self.label_map_file)
 
         # Check if the data directory exists and is a directory, and if it is not empty
         assert os.path.exists(self.data_dir), f'Directory {self.data_dir} does not exist'
@@ -174,6 +176,8 @@ class AtlasDataset(Dataset):
             next(reader)
             label_map = {}
 
+            unique_indices = set()
+
             # Remove any unwanted characters from the label data and convert to a list of integers
             for row in reader:
                 rep = {'\n': '', '\t': '', ']': '', '[': ''}
@@ -186,6 +190,11 @@ class AtlasDataset(Dataset):
                 row[2] = [int(i) for i in row[2]]
                 for value in row[2]:
                     label_map[value] = {'name': row[1], 'index': int(row[0])}
+                    unique_indices.add(int(row[0]))
+                    
+
+        # the number of unique indices
+        self.num_classes = len(unique_indices)
         return label_map
 
     def __len__(self):

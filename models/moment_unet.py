@@ -1,10 +1,10 @@
 import os
 import sys
 
-import torch
-from torch import nn
-from torch.nn import Sequential, Module
-import torch.nn.functional as F
+import torch # type: ignore
+from torch import nn # type: ignore
+from torch.nn import Sequential, Module # type: ignore
+import torch.nn.functional as F # type: ignore
 
 path = os.getcwd()
 par_path = os.path.abspath(os.pardir)

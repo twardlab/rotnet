@@ -8,19 +8,19 @@ sys.path.insert(0, root_dir)
 sys.path.insert(0, parent_dir)
 
 from models.benchmark_models2 import *
-import torchvision.transforms as transforms
-from torcheval.metrics import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassAUROC
-import torch.utils.data as data
-import torch
-from medmnist import INFO
-import medmnist
+import torchvision.transforms as transforms # type: ignore
+from torcheval.metrics import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassAUROC # type: ignore
+import torch.utils.data as data # type: ignore
+import torch # type: ignore
+from medmnist import INFO # type: ignore
+import medmnist # type: ignore
 import argparse
-import numpy as np
+import numpy as np # type: ignore
 import time
-from tqdm import tqdm
+from tqdm import tqdm # type: ignore
 import json
-from comet_ml import Experiment
-from torch import profiler
+from comet_ml import Experiment # type: ignore
+from torch import profiler # type: ignore
 
 PRESETS ={
     "VanillaCNN" : VanillaCNN,
