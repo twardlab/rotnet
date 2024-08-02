@@ -88,22 +88,13 @@ class MomentUNet(Module):
 
     def forward(self, x):
         xinc = self.inc(x)
-        print(f"xinc: {xinc.size()}")
         x1 = self.down1(xinc)
-        print(f"x1: {x1.size()}")
         x2 = self.down2(x1)
-        print(f"x2: {x2.size()}")
         x3 = self.down3(x2)
-        print(f"x3: {x3.size()}")
         x4 = self.down4(x3)
-        print(f"x4: {x4.size()}")
 
         x = self.up1(x4, x3)
-        print(f"x after up1: {x.size()}")
         x = self.up2(x, x2)
-        print(f"x after up2: {x.size()}")
         x = self.up3(x, x1)
-        print(f"x after up3: {x.size()}")
         x = self.up4(x, xinc)
-        print(f"x after up4: {x.size()}")
         return self.outc(x)

@@ -20,9 +20,10 @@ from torch.utils.data import Dataset, DataLoader # type: ignore
 import torchvision.transforms as transforms # type: ignore
 from torch.optim import Adam # type: ignore
 from monai.losses import DiceCELoss, DiceLoss, MaskedDiceLoss # type: ignore
-#from monai.metrics import compute_iou,
+from monai.metrics import HausdorffDistanceMetric, DiceMetric, MeanIoU # type: ignore
+from monai.transforms import AsDiscrete # type: ignore
+import torch.nn.functional as F # type: ignore
 
-from torcheval.metrics import MulticlassAccuracy, MulticlassPrecision, MulticlassRecall, MulticlassAUROC # type: ignore
 import json
 from tqdm import tqdm # type: ignore
 from comet_ml import Experiment # type: ignore
@@ -70,11 +71,23 @@ class Metrics():
         if key not in self.metrics:
             raise KeyError(f"{key} not in metrics")
         return self.metrics[key]
+    
+def to_onehot(y, num_classes):
+    segmentation_map = y.long()
+    segmentation_map = segmentation_map.squeeze(1)
+
+    batch_size, height, width = segmentation_map.size()
+    segmentation_map = segmentation_map.view(batch_size, -1)
+
+    one_hot_map = F.one_hot(segmentation_map, num_classes)
+    one_hot_map = one_hot_map.view(batch_size, height, width, num_classes)
+    one_hot_map = one_hot_map.permute(0, 3, 1, 2)
+    return one_hot_map
 
 def load_data(args):
-    assert args.data_flag is not None, "Please provide a data flag"
+    assert args.data_dir is not None, "Please provide a data flag"
     assert args.label_flag is not None, "Please provide a label flag"
-    assert os.path.exists(args.data_flag), f"Data flag {args.data_flag} does not exist"
+    assert os.path.exists(args.data_dir), f"Data flag {args.data_dir} does not exist"
     assert os.path.exists(args.label_flag), f"Label flag {args.label_flag} does not exist"
     assert os.path.isfile(args.label_flag), f"Label flag {args.label_flag} is not a file"
 
@@ -99,6 +112,9 @@ def load_data(args):
 def calculate_metrics(model, test_loader, device):
     model.eval()
     criterion = DiceCELoss(to_onehot_y=True, softmax=True)
+    hausdorff_distance = HausdorffDistanceMetric(include_background=True, distance_metric="euclidean")
+    dice_metric = DiceMetric(include_background=True, reduction="mean")
+    IOU_metric = MeanIoU(include_background=True)
     batch_losses = []
 
     with torch.no_grad():
@@ -108,10 +124,22 @@ def calculate_metrics(model, test_loader, device):
 
             outputs = model(images)
             loss = criterion(outputs, labels)
+
+            labels = to_onehot(labels, test_loader.dataset.num_classes)
             batch_losses.append(loss.item())
 
+            # Compute the metrics
+            hausdorff_distance(y_pred = outputs, y = labels)
+            dice_metric(y_pred = outputs, y = labels)
+            IOU_metric(y_pred = outputs, y = labels)
+
+    # Get the metrics
+    hausdorff_distance = hausdorff_distance.aggregate().item()
+    dice_metric = dice_metric.aggregate().item()
+    IOU_metric = IOU_metric.aggregate().item()
+
     test_loss = np.mean(batch_losses)
-    return test_loss
+    return test_loss, hausdorff_distance, dice_metric, IOU_metric
 
 def main(args):
     train_loader, test_loader, device, num_classes = load_data(args)
@@ -120,9 +148,7 @@ def main(args):
     criterion = DiceCELoss(to_onehot_y=True, softmax=True)
     metrics = Metrics()
     batch_losses = []
-
-    # Initialize the metrics with nothing
-    # metrics.update(best_val_loss = 0)
+    best_DiceCE_loss = np.inf
 
     for epoch in range(args.epochs):
         model.train()
@@ -131,7 +157,7 @@ def main(args):
             batch_losses.clear()
 
             images = images.to(device)
-            labels = labels.to(device) #TODO: ADJUST DIMENSION?
+            labels = labels.to(device)
 
             assert torch.is_tensor(images), "Image is not a tensor"
             assert torch.is_tensor(labels), "Labels are not a tensor"
@@ -150,19 +176,30 @@ def main(args):
         if epoch % args.val_interval == 0 or epoch == args.epochs - 1:
             model.eval()
 
-            test_loss = calculate_metrics(model, test_loader, device)
+            test_loss, hausdorff_distance, dice_metric, IOU_metric = calculate_metrics(model, test_loader, device)
             metrics.append(test_loss=test_loss,
-                           train_loss=train_loss)
+                           train_loss=train_loss,
+                           hausdorff_distance=hausdorff_distance,
+                           dice_metric=dice_metric,
+                           IOU_metric=IOU_metric)
             
-        experiment.log_metrics("train DiceCE loss", train_loss)
-        experiment.log_metrics("test DiceCE loss", test_loss)
+        experiment.log_metric("train DiceCE loss", train_loss)
+        experiment.log_metric("test DiceCE loss", test_loss)
+        experiment.log_metric("test Hausdorff distance", hausdorff_distance)
+        experiment.log_metric("test Dice metric", dice_metric)
+        experiment.log_metric("test IOU metric", IOU_metric)
 
-        #TODO: SAVE MODEL BASED ON METRICS + FIGURE OUT PATHS
+        if test_loss < best_DiceCE_loss:
+            best_DiceCE_loss = test_loss
+            torch.save(model.state_dict(), os.path.join("results", f"run{args.run}", f"segmentation", f"{args.model}", f"{args.model}{args.run}.pt"))
+
+    with open(os.path.join("results", f"run{args.run}", f"segmentation", f"{args.model}", f"metrics_{args.model}{args.run}.json"), "w") as f:
+        json.dump(metrics.metrics, f)     
             
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_flag", type=str, action="store", dest="data_flag", default="/nafs/dtward/allen/rois/64x64_sample_rate_0_5_all", help="The dataset path to use: could be .../NxN_sample_rate_X_Z_all, etc...")
-    parser.add_argument("--label_flag", type=str, action="store", dest="label_flag", default="label", help="The label mapping path to use: ../categories.csv, ../divisions.csv, ../organs.csv, ../structures.csv, ../substructures.csv")
+    parser.add_argument("--data_dir", type=str, action="store", dest="data_dir", default="/nafs/dtward/allen/rois/64x64_sample_rate_0_5_all", help="The dataset path to use: could be .../NxN_sample_rate_X_Z_all, etc...")
+    parser.add_argument("--label_flag", type=str, action="store", dest="label_flag", default="/nafs/dtward/allen/rois/divisions.csv", help="The label mapping path to use: ../categories.csv, ../divisions.csv, ../organs.csv, ../structures.csv, ../substructures.csv")
     parser.add_argument("--model", type=str, action="store", dest="model", default="moment_unet", help="The model to use: moment_unet or unet")
     parser.add_argument("--batch_size", type=int, action="store", dest="batch_size", default=8, help="The batch size to use")
     parser.add_argument("--img_channels", type=int, action="store", dest="img_channels", default=501, help="The number of image channels")
@@ -170,14 +207,13 @@ if __name__ == '__main__':
     parser.add_argument("--epochs", type=int, action="store", dest="epochs", default=10, help="The number of epochs to use")
     parser.add_argument("--lr", type=float, action="store", dest="lr", default=1e-4, help="The learning rate to use")
     parser.add_argument("--val_interval", type=int, action="store", dest="val_interval", default=1, help="The validation interval to use")
-    parser.add_argument("--save_on_best", type=str, action="store", dest="save_on_best", default="acc", help="Whether to save on best: acc, auc, acc_auc, final, all")
     parser.add_argument("--run", type=int, action="store", dest="run", default=0, help="The run number to use")
     args = parser.parse_args()
 
     cwd = os.getcwd()
     parent_dir = os.path.dirname(cwd)
     os.chdir(parent_dir)
-    path = os.path.join(parent_dir, "results", f"{args.data_flag}", f"run{args.run}")
+    path = os.path.join(parent_dir, "results", f"run{args.run}", f"segmentation", f"{args.model}")
     print(f"Path: {path}")
     if not os.path.exists(path):
         os.makedirs(path)
