@@ -1,3 +1,4 @@
+# NOTE: SOURCED FROM https://github.com/milesial/Pytorch-UNet/tree/master/unet originally
 import torch # type: ignore 
 from torch import nn # type: ignore
 from torch.nn import Sequential, Upsample, ConvTranspose2d, MaxPool2d, Module, Conv2d, BatchNorm2d, ReLU # type: ignore 
