@@ -12,4 +12,6 @@ module load cerebrum-hpc/1.0
 module load anaconda/3.7
 source /nafs/dtward/intelpython3/bin/activate
 
-python ../segmentation_train.py 
+python ../segmentation_train.py --model unet --num_channels 16 --run 1005 --epochs 200 --label_flag /nafs/dtward/allen/rois/categories.csv --data_dir /nafs/dtward/allen/rois/64x64_sample_rate_0_8_all/
+
+# /nafs/dtward/allen/rois/64x64_num_samples_120_all2

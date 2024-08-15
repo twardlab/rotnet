@@ -57,3 +57,4 @@ segmentation/UnetCNN_v00.pth
 best_eqUnetCNN_v00.pth
 best_eqUnetCNN_v01.pth
 segmentation/scripts/train.sh
+segmentation/scripts/train.sh
