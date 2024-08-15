@@ -18,6 +18,16 @@ import escnn.gspaces as gspaces # type: ignore
 
 class MomentConvBlock(tnn.Module):
     def __init__(self, in_scalars : int, in_vectors : int, out_scalars : int, out_vectors : int, kernel_size, padding, map_type = 'scalar_vector_to_scalar_vector'):
+        '''
+        in_type: FieldType
+            The input type of the layer
+        out_type: FieldType
+            The output type of the layer
+        kernel_size: int
+            The size of the kernel
+        padding: int
+            The padding to use
+        '''
         super(MomentConvBlock, self).__init__()
         self.layers_list = tnn.ModuleList()
 
@@ -355,13 +365,6 @@ class TrivialIrrepMoment(tnn.Module):
         x = self.linear(x)
         return x
 
-def test_model(model: torch.nn.Module, device: torch.device, input_shape: tuple):
-    model.to(device).eval()
-    x = torch.randn(*input_shape).to(device)
-    with torch.no_grad():
-        y = model(x)
-    return y
-
 # count number of parameters
 def count_parameters(model):
     model.train()
@@ -373,8 +376,3 @@ def test_model(model: torch.nn.Module, device: torch.device, input_shape: tuple)
     with torch.no_grad():
         y = model(x)
     return y
-
-# count number of parameters
-def count_parameters(model):
-    model.train()
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
