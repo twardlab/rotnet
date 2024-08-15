@@ -15,6 +15,8 @@ class ExtractROI():
         '''
         Extracts ROIs from the image data and saves them as npz files in the save_dir. This dataloader was buit for
         the Allen Institute Brain Atlas. We separate the data into training and testing data based on the hemisphere.
+        NOTE: This extractor uses patch-based extraction, where the ROI is extracted from the center of the image data, and not
+        simply random coordinates.
 
         Args:
         extract_dir (str): 
@@ -66,7 +68,7 @@ class ExtractROI():
 
             # Calculate the total number of ROIs that can be extracted from the image and the number of ROIs to be extracted
             total_rois = nrows * ncols
-            num_samples = math.ceil(total_rois * self.sampling_rate)
+            num_samples = math.floor(total_rois * self.sampling_rate)
 
             # Check if there are ROIs to be extracted from the image and if the number of ROIs to be extracted is less than the total ROIs
             assert label_mode in ['center', 'all', 'mode'], f'Invalid label assignment {label_mode}'
@@ -83,6 +85,10 @@ class ExtractROI():
                 # get the ROI and label for the given row and column
                 rois = I[:, row*self.ROI_size[0]:(row+1)*self.ROI_size[0], col*self.ROI_size[1]:(col+1)*self.ROI_size[1]]
                 lbls = L[:, row*self.ROI_size[0]:(row+1)*self.ROI_size[0], col*self.ROI_size[1]:(col+1)*self.ROI_size[1]]
+
+                # TODO: keep? Ignores ROIs that are only background
+                if np.sum(lbls) == 0:
+                    continue
                 
                 # get center pixel coordinates for the ROI
                 x = row*self.ROI_size[0] + self.ROI_size[0]//2
@@ -97,6 +103,115 @@ class ExtractROI():
                 if label_mode == 'mode':
                     lbls = np.array([np.argmax(np.bincount(lbls.flatten()))])
 
+                # save the extracted ROI as a npz file
+                self._save_npz(npz_file, rois, lbls, (x, y))
+        print(f"All ROIs extracted from {self.extract_dir} and saved to {self.save_dir} under train and test subfolders")
+
+    def _save_npz(self, npz_file, rois, lbls, coords):
+        # strip npz at the end of the file name: C57BL6J-638850.13_lr_0.npz -> C57BL6J-638850.13_lr_0
+        npz_name = npz_file.split('.')[0] + npz_file.split('.')[1]
+
+        # if is left brain, save to train folder
+        if npz_file.split('_')[-1].split('.')[0] == '1':
+            sub_dir = os.path.join(self.save_dir, 'train')
+            if not os.path.exists(sub_dir):
+                os.makedirs(sub_dir)
+
+        # if is right brain, save to test folder
+        elif npz_file.split('_')[-1].split('.')[0] == '0':
+            sub_dir = os.path.join(self.save_dir, 'test')
+            if not os.path.exists(sub_dir):
+                os.makedirs(sub_dir)
+
+        # Save the extracted ROI as a npz file
+        np.savez(os.path.join(sub_dir, f'{npz_name}._{coords[0]}_{coords[1]}_{self.label_mode}.npz'), I=rois, L=lbls)
+
+class ExtractROI2():
+    def __init__(self, extract_dir, save_dir):
+        '''
+        Extracts ROIs from the image data and saves them as npz files in the save_dir. This dataloader was buit for
+        the Allen Institute Brain Atlas. We separate the data into training and testing data based on the hemisphere.
+        NOTE: This extractor uses random coordinates as opposed to splitting the image into patches like ExtractROI.
+
+        Args:
+        extract_dir (str): 
+            The directory containing the npz files with the image data and label data of slices
+        save_dir (str): 
+            The directory to save the extracted ROIs as npz files
+        '''
+        self.extract_dir = extract_dir
+        self.save_dir = save_dir
+        self.ROI_size = None
+        self.sampling_rate = None
+        self.label_mode = None
+
+    def extract_ROI(self, ROI_size, num_samples, label_mode='center'):
+        '''
+        Args:
+        ROI_size (tuple): 
+            The size of the ROI to be extracted from the image
+        sampling_rate (float):
+            The sampling rate to be used for the extraction of the ROI for a given slice
+        label_mode (str):
+            The mode to be used for the label data extraction. Options include 'center' and 'all'. 
+            - If 'center' is selected, the label data for the center pixel of the ROI is extracted. 
+            - If 'mode' is selected, the mode of the labels data is extracted (most frequent label).
+            - If 'all' is selected, the labels remain an n x n matrix
+            where n is the size of the ROI. Default is 'center'.
+        '''
+        # The size of the ROI to be extracted from the image
+        self.ROI_size = ROI_size
+        self.label_mode = label_mode
+
+        # The sampling rate to be used for the extraction of the ROI for a given slice
+        self.num_samples = num_samples
+
+        for npz_file in tqdm(os.listdir(self.extract_dir)):
+            if not npz_file.endswith('.npz'):
+                continue
+
+            # I is the image data, L is the label data
+            I, L = np.load(os.path.join(self.extract_dir, npz_file)).values()
+            
+            # Get the shape of the image data and label data
+            Ishape = I.shape
+            Lshape = L.shape
+
+            # a set of unique coordinates to avoid extracting the same ROI multiple times - we will randomly generate coordinates
+            ROI_coords = set()
+
+            while len(ROI_coords) < num_samples:
+                x_coord = rand.randint(0, Ishape[1] - self.ROI_size[0])
+                y_coord = rand.randint(0, Ishape[2] - self.ROI_size[1])
+                
+                # add the center coordinates as long as the center coordinate allows for the whole ROI to be in bounds of the image
+                # for example, with a 64x64 ROI, the center coordinate must be at least 32 pixels away from the edge of the image
+                if x_coord + self.ROI_size[0]//2 < Ishape[1] and y_coord + self.ROI_size[1]//2 < Ishape[2] and x_coord - self.ROI_size[0]//2 >= 0 and y_coord - self.ROI_size[1]//2 >= 0:
+                    ROI_coords.add((x_coord, y_coord))
+
+            # Check if there are ROIs to be extracted from the image and if the number of ROIs to be extracted is less than the total ROIs
+            assert label_mode in ['center', 'all', 'mode'], f'Invalid label assignment {label_mode}'
+            assert num_samples > 0, f'No ROIs to be extracted from image {npz_file}'            
+            assert Ishape[1] >= self.ROI_size[0] and Ishape[2] >= self.ROI_size[1], f'ROI size is greater than image size'
+
+            for x, y in ROI_coords:
+
+                # get the ROI and label for the given coordinates: should be from x - ROI_size[0]//2 to x + ROI_size[0]//2 and y - ROI_size[1]//2 to y + ROI_size[1]//2
+                rois = I[:, x - self.ROI_size[0]//2:x + self.ROI_size[0]//2, y - self.ROI_size[1]//2:y + self.ROI_size[1]//2]
+                lbls = L[:, x - self.ROI_size[0]//2:x + self.ROI_size[0]//2, y - self.ROI_size[1]//2:y + self.ROI_size[1]//2]
+
+                # TODO: keep? Ignores ROIs that are only background
+                if np.sum(lbls) == 0:
+                    continue
+                
+                #NOTE: could do mode of all labels, or take all the labels, (do x,y for labels at center of ROI)
+                # label chosen as center coordinates for the ROI
+                if label_mode == 'center':
+                    lbls = lbls[:, self.ROI_size[0]//2, self.ROI_size[1]//2]
+                if label_mode == 'all':
+                    lbls = lbls
+                if label_mode == 'mode':
+                    lbls = np.array([np.argmax(np.bincount(lbls.flatten()))])
 
                 # save the extracted ROI as a npz file
                 self._save_npz(npz_file, rois, lbls, (x, y))
@@ -203,7 +318,7 @@ class AtlasDataset(Dataset):
         '''
         return len(os.listdir(self.data_dir))
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx, original_coords = False):
         '''
         Returns the image data and label data of the npz file at the given index
         '''
@@ -230,3 +345,12 @@ class AtlasDataset(Dataset):
             L = self.target_transform(L)
 
         return I, L
+
+    def get_original_coords(self, idx):
+        I, L = self.__getitem__(idx)
+
+        coords = int(self.data_dirs[idx].split('.')[1].split('_')[1]), int(self.data_dirs[idx].split('.')[1].split('_')[2])
+        file_name = self.data_dirs[idx]
+        base_name = str(file_name[0:14] + '.' + file_name[14:21] + '.npz')
+
+        return I, L, coords, base_name
