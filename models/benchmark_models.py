@@ -19,6 +19,16 @@ import e2cnn.gspaces as gspaces
 
 class ECNNConvBlock(enn.EquivariantModule):
     def __init__(self, in_type : enn.FieldType, out_type : enn.FieldType, kernel_size, padding):
+        '''
+        in_type: FieldType
+            The input type of the layer
+        out_type: FieldType
+            The output type of the layer
+        kernel_size: int
+            The size of the kernel
+        padding: int
+            The padding to use
+        '''
         super(ECNNConvBlock, self).__init__()
         self.in_type = in_type
         self.out_type = out_type
