@@ -67,6 +67,8 @@ class ScalarToScalar(torch.nn.Module):
                         
         tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
         return torch.nn.functional.conv2d(tmp,c,self.bias)
+    
+    
         
         
 class ScalarToVector(torch.nn.Module):
@@ -94,7 +96,7 @@ class ScalarToVector(torch.nn.Module):
         # register buffers, this will allow them to move to devices                
         self.register_buffer('Xhat',Xhat)
         
-        inds = inds - 1 # we will not use r=0.  the filter will get assigned a different number, but hten multiplied by 0
+        inds = inds - 1 # we will not use r=0.  the filter will get assigned a different number, but then multiplied by 0
         inds[inds==-1] = 0        
         self.register_buffer('inds',inds) # don't need a parameter for r=0, but this makes
         
@@ -126,7 +128,71 @@ class ScalarToVector(torch.nn.Module):
         return torch.nn.functional.conv2d(tmp,c)
         
         
+
+class ScalarToVector90(torch.nn.Module):
+    '''This module adds an additional basis function with a 90 degree rotation'''
+    def __init__(self,in_channels, out_channels, kernel_size, padding=0, padding_mode='zeros'):
+        # with vectors, out channel will be the number of vectors, not the number of components
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size    
+        self.padding = padding
+        self.padding_mode = padding_mode
+        if padding_mode == 'zeros': self.padding_mode = 'constant'
+        # use kernel size to get x
+        r = (kernel_size - 1)//2
+        x = torch.arange(-r,r+1)
+        X = torch.stack(torch.meshgrid(x,x,indexing='ij'),-1)          
+        R = torch.sqrt(torch.sum(X**2,-1))
+        Xhat = X/R[...,None]
+        Xhat[R==0] = 0        
+        # reshape it to the way I will want to use it
+        # it should match out channels on the left
+        Xhat = Xhat.permute(-1,0,1)[:,None]
+        X90hat = Xhat.flip(0)*torch.tensor([-1.0,1.0])[:,None,None,None]
+        Xhat = Xhat.repeat((out_channels,1,1,1))
+        X90hat = X90hat.repeat((out_channels,1,1,1))
+        rs,inds = torch.unique(R,return_inverse=True)        
+        # register buffers, this will allow them to move to devices                
+        self.register_buffer('Xhat',Xhat)        
+        self.register_buffer('X90hat',X90hat)
         
+        inds = inds - 1 # we will not use r=0.  the filter will get assigned a different number, but then multiplied by 0
+        inds[inds==-1] = 0        
+        self.register_buffer('inds',inds) # don't need a parameter for r=0, but this makes
+        
+        self.weights = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels)) # 
+        self.weights90 = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels)) # TODO: use the right normalizatoin
+        if x.shape[-1] == 1:
+            self.forward = self.forwarde1
+        else:
+            self.forward = self.forwardg1
+    
+    def forwarde1(self,x):        
+        # kernel size 1 needs to be a special case because self.inds is empty, the result is just 0
+        # no padding allowed
+        # note we assume square
+        return torch.zeros(x.shape[0],self.out_channels*2,1,1,dtype=x.dtype,device=x.device)
+    
+    def forwardg1(self,x):
+        # convert the weights into a kernel
+        # we reshape from out x in x len(rs)
+        # to
+        # out x in x kernel_size x kernel_size          
+        
+        c = torch.repeat_interleave(self.weights,2,0)[...,self.inds]*self.Xhat
+        c90 = torch.repeat_interleave(self.weights90,2,0)[...,self.inds]*self.X90hat
+        self.c = c + c90
+        
+        
+        # for somme reason the output is not zero mean, has to do with padding
+        # here's a better way
+        tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)
+        return torch.nn.functional.conv2d(tmp,c)
+        
+        
+                
         
             
         
@@ -209,6 +275,66 @@ class VectorToScalar(torch.nn.Module):
         tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
         return torch.nn.functional.conv2d(tmp,c,self.bias) 
         
+
+class VectorToScalar90(torch.nn.Module):
+    ''' In this version we include the extra basis rotated by 90 degrees'''
+    def __init__(self,in_channels, out_channels, kernel_size, padding=0, bias=True, padding_mode='zeros'):
+        # with vectors, in channel will be the number of vectors, not the number of components
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size    
+        self.padding = padding
+        self.padding_mode = padding_mode
+        if padding_mode == 'zeros': self.padding_mode = 'constant'
+        # use kernel size to get x
+        r = (kernel_size - 1)//2
+        x = torch.arange(-r,r+1)
+        X = torch.stack(torch.meshgrid(x,x,indexing='ij'),-1)          
+        R = torch.sqrt(torch.sum(X**2,-1))
+        Xhat = X/R[...,None]
+        Xhat[R==0] = 0        
+        # reshape it to the way I will want to use it
+        # it should match out channels on the left
+        Xhat = Xhat.permute(-1,0,1)[None]
+        X90hat = Xhat.flip(1)*torch.tensor([-1.0,1.0])[None,:,None,None]
+        Xhat = Xhat.repeat((1,in_channels,1,1))
+        X90hat = X90hat.repeat((1,in_channels,1,1))
+        rs,inds = torch.unique(R,return_inverse=True)        
+        inds = inds - 1
+        inds[inds<0] = 0
+        # register buffers, this will allow them to move to devices                
+        self.register_buffer('Xhat',Xhat)
+        self.register_buffer('X90hat',X90hat)
+        self.register_buffer('inds',inds)
+        self.weights = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels*2)) # TODO: use the right normalizatoin
+        self.weights90 = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels*2)) # TODO: use the right normalizatoin
+        if bias:
+            self.bias = torch.nn.parameter.Parameter(torch.randn(out_channels)/np.sqrt(3.0))        
+        else:
+            self.bias = None
+            
+        if x.shape[-1] == 1:
+            self.forward = self.forwarde1
+        else:
+            self.forward = self.forwardg1
+    
+    def forwarde1(self,x):
+        # size 1 is a special case because there are no parameters, just return 0 + bias
+        # self.ind is empty
+        return torch.zeros(x.shape[0],self.out_channels,1,1,dtype=x.dtype,device=x.device) + self.bias[...,None,None]
+    
+    def forwardg1(self,x):
+        
+        # convert the weights into a kernel
+        # we reshape from out x in x len(rs)
+        # to
+        # out x in x kernel_size x kernel_size             
+        c = torch.repeat_interleave(self.weights[...,self.inds],2,1)*self.Xhat + torch.repeat_interleave(self.weights90[...,self.inds],2,1)*self.X90hat
+        self.c = c
+        tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
+        return torch.nn.functional.conv2d(tmp,c,self.bias) 
+                
         
         
 class VectorToVector(torch.nn.Module):
@@ -273,7 +399,92 @@ class VectorToVector(torch.nn.Module):
         self.cidentity = cidentity
         tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
         return torch.nn.functional.conv2d(tmp,c) # no bias when output is vector
+
+    
+class VectorToVector90(torch.nn.Module):
+    '''Question, should I separate these into two types and interleave them somehow rather than combining them
+    This one uses the extra basis functions rotated by 90 degrees.
+    '''
+    def __init__(self,in_channels, out_channels, kernel_size, padding=0, padding_mode='zeros'):
+        # with vectors, in channel will be the number of vectors, not the number of components
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size    
+        self.padding = padding
+        self.padding_mode = padding_mode
+        if padding_mode == 'zeros': self.padding_mode = 'constant'
+        # use kernel size to get x
+        r = (kernel_size - 1)//2
+        x = torch.arange(-r,r+1)
+        X = torch.stack(torch.meshgrid(x,x,indexing='ij'),-1)          
+        R = torch.sqrt(torch.sum(X**2,-1))
+        Xhat = X/R[...,None]
+        Xhat[R==0] = 0        
+        # reshape it to the way I will want to use it
+        # it should match out channels on the left
+        # we need XhatXhat, and identity
+        Xhat = Xhat.permute(-1,0,1)        
+        X90hat = Xhat.flip(0)*torch.tensor([-1.0,1.0])[...,None,None]
+        # now there are 4
+        XhatXhat = Xhat[None,:]*Xhat[:,None]
+        XhatXhat = XhatXhat.repeat((out_channels,in_channels,1,1))
+        X90hatXhat = X90hat[None,:]*Xhat[:,None]
+        X90hatXhat = X90hatXhat.repeat((out_channels,in_channels,1,1))
+        XhatX90hat = Xhat[None,:]*X90hat[:,None]
+        XhatX90hat = XhatX90hat.repeat((out_channels,in_channels,1,1))
+        X90hatX90hat = X90hat[None,:]*X90hat[:,None]
+        X90hatX90hat = X90hatX90hat.repeat((out_channels,in_channels,1,1))
         
+        
+        rs,inds = torch.unique(R,return_inverse=True)        
+        indsxx = inds.clone()-1
+        indsxx[indsxx==-1] = 0# wlil get multiplied by zero
+        # register buffers, this will allow them to move to devices
+        indsidentity = inds
+        
+        identity = torch.eye(2).repeat((out_channels,in_channels))[...,None,None]
+        self.register_buffer('XhatXhat',XhatXhat)
+        self.register_buffer('X90hatXhat',X90hatXhat)
+        self.register_buffer('XhatX90hat',XhatX90hat)
+        self.register_buffer('X90hatX90hat',X90hatX90hat)
+        self.register_buffer('identity',identity)
+        self.register_buffer('indsxx',indsxx)
+        self.register_buffer('indsidentity',indsidentity)
+        
+        self.weightsxx = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels*2))
+        self.weightsx90x = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels*2))
+        self.weightsxx90 = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels*2))
+        self.weightsx90x90 = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs)-1)/np.sqrt(3*in_channels*2))
+        self.weightsidentity = torch.nn.parameter.Parameter(torch.randn(out_channels,in_channels,len(rs))/np.sqrt(3*in_channels*2))
+        
+        # special case if kernel is size 1
+        # print(x.shape)
+        if x.shape[-1] == 1:
+            self.forward = self.forwarde1
+        else:
+            self.forward = self.forwardg1
+    def forwarde1(self,x):
+        cidentity = torch.repeat_interleave(torch.repeat_interleave(self.weightsidentity[...,self.indsidentity],2,0),2,1)*self.identity
+        self.cidentity = cidentity
+        return torch.nn.functional.conv2d(x,cidentity)
+    def forwardg1(self,x):
+        # convert the weights into a kernel
+        # we reshape from out x in x len(rs)
+        # to
+        # out x in x kernel_size x kernel_size             
+        cxx = torch.repeat_interleave(torch.repeat_interleave(self.weightsxx,2,0),2,1)[...,self.indsxx]*self.XhatXhat
+        cx90x = torch.repeat_interleave(torch.repeat_interleave(self.weightsx90x,2,0),2,1)[...,self.indsxx]*self.X90hatXhat
+        cxx90 = torch.repeat_interleave(torch.repeat_interleave(self.weightsxx90,2,0),2,1)[...,self.indsxx]*self.XhatX90hat
+        cx90x90 = torch.repeat_interleave(torch.repeat_interleave(self.weightsx90x90,2,0),2,1)[...,self.indsxx]*self.X90hatX90hat
+        cidentity = torch.repeat_interleave(torch.repeat_interleave(self.weightsidentity,2,0),2,1)[...,self.indsidentity]*self.identity
+        c = cxx + cx90x + cxx90 + cx90x90 + cidentity
+        self.c = c
+        self.cxx = cxx # don't really need this, but may want to look at it later
+        self.cidentity = cidentity
+        tmp = torch.nn.functional.pad(x,(self.padding,self.padding,self.padding,self.padding),mode=self.padding_mode)                
+        return torch.nn.functional.conv2d(tmp,c) # no bias when output is vector
+    
 class ScalarVectorToScalarVector(torch.nn.Module):
     def __init__(self, in_scalars, in_vectors, out_scalars, out_vectors, kernel_size, padding=0, bias=True, padding_mode='zeros'):
         super().__init__()
@@ -380,6 +591,21 @@ class VectorSigmoid(torch.nn.Module):
         return x*torch.relu((lr-1.0))/lr
         
         #return torch.relu(x)
+class VectorSigmoidLog(torch.nn.Module):
+    '''This one is just relu on the log magnitude'''
+    def __init__(self,ep=1e-6):
+        super().__init__()
+        self.ep = ep
+    def forward(self,x):
+        # first get magnitude
+        x2 = x**2
+        l2 = x2[:,0::2] + x2[:,1::2] + self.ep
+        logl2 = torch.log(l2)
+        newlogl2 = torch.relu(logl2)
+        factor = ( (newlogl2 - logl2)*0.5 ).exp()
+        return x*factor.repeat_interleave(2,dim=1)
+        
+        
         
 class ScalarSigmoid(torch.nn.Module):
     def __init__(self):
@@ -415,11 +641,16 @@ class VectorBatchnorm(torch.nn.Module):
     def forward(self,x):                
         magnitude2 = x[:,0::2]**2 + x[:,1::2]**2 + 1e-6
         logmagnitude2 = torch.log(magnitude2)
-        scaledlogmagnitude2 = self.b(logmagnitude2)
+        #scaledlogmagnitude2 = self.b(logmagnitude2)
+        # let's think about this normalization
+        # do I really need the 0.5 below?
         
-        return x * torch.repeat_interleave((  (scaledlogmagnitude2 - logmagnitude2)*0.5 ).exp(),2,dim=1)
+        #return x * torch.repeat_interleave((  (scaledlogmagnitude2 - logmagnitude2)*0.5 ).exp(),2,dim=1)
 
-    
+        logmagnitude = 0.5*torch.log(magnitude2)
+        scaledlogmagnitude = self.b(logmagnitude)
+        return x * torch.repeat_interleave((  (scaledlogmagnitude - logmagnitude) ).exp(),2,dim=1)
+        
 class ScalarVectorBatchnorm(torch.nn.Module):
     def __init__(self,nscalar,nvector):
         super().__init__()
@@ -576,13 +807,7 @@ class MatrixToVector(torch.nn.Module):
         XDD = XDD.reshape(2,4,kernel_size,kernel_size).repeat(out_channels,in_channels,1,1)
         DXD = DXD.reshape(2,4,kernel_size,kernel_size).repeat(out_channels,in_channels,1,1)
         DDX = DDX.reshape(2,4,kernel_size,kernel_size).repeat(out_channels,in_channels,1,1)
-           
-        
-        
-        
-        
-        
-        
+                                                           
         
         
         # register buffers, this will allow them to move to devices        
