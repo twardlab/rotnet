@@ -17,6 +17,7 @@ Build 3D.
 '''
 import torch
 import numpy as np
+from itertools import permutations,product
 
 
 class ScalarToScalar(torch.nn.Module):
@@ -1044,3 +1045,690 @@ class MatrixBatchnorm(torch.nn.Module):
         
         return x * torch.repeat_interleave((  (scaledlogmagnitude2 - logmagnitude2)*0.5 ).exp(),4,dim=1)
         
+        
+        
+        
+        
+# finally some tools for general tensors and dimension
+
+class OEConv(torch.nn.Module):
+    ''' Class for orthogonally equivariant convolutions
+    
+    For notation, I will include specific 2d and 3d versions
+    
+    '''
+    def __init__(self, in_channels, out_channels, kernel_size, 
+                 dimension, in_rank, out_rank, 
+                 bias=None,**kwargs):
+        ''' Default bias behavior will be true if out_rank=1 and zero otherwise
+        Any other kwargs are passed onto conv function
+        '''
+        super().__init__()
+        
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        if not kernel_size%2:
+            raise Exception(f'kernel_size must be odd, but you input {kernel_size}')
+        self.kernel_size = kernel_size
+        
+        
+        if type(dimension) is not int or dimension < 1:
+            raise Exception(f'dimension must be a positive integer but you input {dimension}')
+        self.dimension = dimension
+        if self.dimension == 2:
+            self.conv = torch.nn.functional.conv2d
+        elif self.dimension == 3:
+            self.conv = torch.nn.functional.conv3d
+        else:
+            raise Exception('Only dimensions 2 or 3 supported')
+        
+        if type(in_rank) is not int or in_rank < 0:
+            raise Exception(f'in_rank must be a nonnegative integer but you input {in_rank}')
+        self.in_rank = in_rank
+        
+        if type(out_rank) is not int or out_rank < 0:
+            raise Exception(f'out_rank must be a nonnegative integer but you input {out_rank}')
+        self.out_rank = out_rank
+        self.rank = self.in_rank + self.out_rank
+        
+        # how many points to sample in space.  This could be a variable bot for now I fix it
+        #self.nspace = int(np.ceil((self.kernel_size-1)/2*np.sqrt(self.dimension)))
+        self.nspace = (self.kernel_size-1)//2+1
+        if self.kernel_size == 3:
+            # if kernel size is 3 the above is just not enough
+            self.nspace = 3
+        #self.nspace = max(1,self.nspace) # for 1x1 convolution we need at least 1 sample
+        
+        # build the space domain for the kernels
+        x = torch.arange(self.kernel_size) - (self.kernel_size-1)/2
+        X = torch.stack(torch.meshgrid((x,)*self.dimension,indexing='ij')) # keep space components last
+        D = torch.sum(X**2,0)**0.5
+        dunique,dinds = torch.unique(D,return_inverse=True)        
+        Xhat = X/torch.sum(X**2,0,keepdims=True)**0.5
+        Xhat[torch.isnan(Xhat)] = 0        
+        # copy buffers
+        self.register_buffer('Xhat',Xhat)
+        self.register_buffer('dunique',dunique)
+        self.register_buffer('dinds',dinds)
+        self.register_buffer('eye',torch.eye(self.dimension))
+        
+        # build interpolatoin kernel                
+        if self.kernel_size > 1:
+            xspace = torch.linspace(0,torch.max(dunique),self.nspace)        
+            dxspace = xspace[1] - xspace[0]
+            interp = []
+            for i in range(len(dunique)):
+                ind0 = (dunique[i]/dxspace).floor().int()
+                ind1 = ind0 + 1
+                p = dunique[i]/dxspace-ind0
+                interp_ = torch.zeros(self.nspace)
+                interp_[ind0] = 1-p
+                if ind1 < self.nspace:
+                    interp_[ind1] = p
+                interp.append(interp_)
+            interp = torch.stack(interp)
+        else:
+            interp = torch.ones((1,1))
+        self.register_buffer('interp',interp)
+        
+        # get the signatures
+        self.signatures = self.get_all_signatures(self.rank)
+        self.nsignatures = len(self.signatures)
+        T = []
+        for scount,s in enumerate(self.signatures):
+            #print(s)    
+
+            # these are all the indices
+            # how am I going to do the assignments?
+            # I could initialize to ones and then do the products
+            # we need to build a slice here
+
+            # find all the indices not in the tuple
+            
+            if self.rank > 0:
+                tmp = torch.ones_like(Xhat)
+                xinds = list((set(range(self.rank)) - set(np.array(s).ravel().tolist())))              
+                for i in xinds:        
+                    sl = [None]*self.rank
+                    sl[i] = slice(None)                     
+                    factor = self.Xhat[tuple(sl)]                                
+                    tmp = tmp * factor
+                    
+
+                # now we go through the indices that are in the tuple
+                for i in s:                                
+                    sl = [None]*(self.rank+self.dimension) # plus d for the d space dimensions
+                    sl[i[0]] = slice(None)  
+                    sl[i[1]] = slice(None)  
+
+                    tmp = tmp * self.eye[tuple(sl)]   
+            else:
+                tmp = torch.ones_like(Xhat[0])            
+            T.append(tmp)
+        T = torch.stack(T,-self.dimension-1)
+        
+        self.register_buffer('T',T)
+        # get information for permutations
+        self.sl = (slice(None),slice(None),) + (None,)*self.rank
+        mydims = torch.arange(self.rank+2+self.dimension)                
+        mylist = [mydims[0],]
+        mylist.extend(  mydims[2:2+self.out_rank]   )
+        mylist.append(mydims[1])
+        mylist.extend( mydims[2+self.out_rank:2+self.out_rank+self.in_rank] )
+        mylist.extend(mydims[-self.dimension:])
+        myperm = [p.item() for p in mylist]        
+        self.myperm = myperm
+        self.reshape =  (self.out_channels*self.dimension**self.out_rank,
+                         self.in_channels*self.dimension**self.in_rank) + (self.kernel_size,)*self.dimension
+        
+        
+        # what if in rank is zero? special case above
+        
+        
+        
+        # weights        
+        # how
+        bound = 1/(self.kernel_size**self.dimension * self.in_channels)**0.5
+        bound = 1/(self.kernel_size**self.dimension * self.in_channels * self.nsignatures)**0.5 
+        # I think I need the nsignatures here beecause its what I'm summing over
+        #self.weights = torch.nn.Parameter(torch.randn(self.out_channels,self.in_channels,self.nsignatures,self.nspace))
+        self.weights = torch.nn.Parameter(
+            ( torch.rand(self.out_channels,self.in_channels,self.nsignatures,self.nspace) -0.5 )*2*bound 
+        )
+        # bias, currently only scalar
+        # TODO if we are even dimension we can have a bias proportional to identity
+        # for odd dimension
+        # for higher order I won't implement it yet
+        
+        
+        if (bias is None or bias) and (self.out_rank == 0 or self.out_rank == 2):
+            # for scalars or tensor order 2 we have the same number of components
+            #self.bias = torch.nn.Parameter(torch.randn(self.out_channels))
+            self.bias = torch.nn.Parameter((torch.rand(self.out_channels)-0.5)*2*bound)
+            if self.out_rank == 0:
+                self.get_bias = self.get_bias_0
+            elif self.out_rank == 2:
+                self.get_bias = self.get_bias_2
+        else:
+            self.bias = None  
+            self.get_bias = self.get_bias_other
+        self.kwargs = kwargs
+        
+        
+    # bias in a few different forms
+    def get_bias_0(self):
+        return self.bias
+    def get_bias_2(self):
+        #print(self.eye)
+        #print(self.bias)
+        return (self.eye[None]*self.bias[...,None,None]).reshape(-1) 
+    # for higher order even there are different ways to take products of identity
+    def get_bias_other(self):
+        return None
+        
+        
+    
+    def get_all_signatures(self,rank):
+        '''
+        Get all sets of pairs for a given total rank
+        These pairs will be set with identity.
+        '''
+
+        # first get all the permutations
+        permutations_ = list(permutations(range(rank)))
+        # even length
+        signatures = []
+        for i in range(rank//2+1):
+            if i == 0:
+                signatures.append(tuple())
+                continue
+            # otherwise
+            theseperms = [p[:2*i] for p in permutations_]
+            # group them in sets of 2
+
+            for p in theseperms:
+                thesesets = []
+                for j in range(i):
+                    thesesets.append( tuple(set((p[2*j:2*j+2])) ) )
+                signatures.append( tuple(set(thesesets))  )
+
+        # sort them by length and by axis
+        signatures = sorted(tuple(set(signatures)))
+        signatures = sorted(signatures,key=len)
+
+
+        return signatures
+    def make_kernel(self):
+        fx = (self.interp@self.weights[...,None])[...,0][...,self.dinds]        
+        #print(fx.shape)
+        fxsl = fx[self.sl]     
+        #print(fxsl.shape)
+        #print(self.T.shape)
+        fxslT = fxsl*self.T
+        #print(fxslT.shape)
+        K = torch.sum( (fxslT) , -self.dimension-1)    
+        #print(K.shape)
+        Kp = K.permute(*self.myperm)  
+        #print(self.myperm)
+        kernel = Kp.reshape(*self.reshape)
+        self.kernel = kernel # save it as a member
+        return kernel
+        
+        
+        
+    def forward(self,x):
+        # TODO, only call make kernel in train mode
+        # TODO implement padding modes using the pad function
+        # in eval mode the kernel is not changing and I can use the old one
+        self.make_kernel()
+        #print(kernel.shape)
+        return self.conv(x,self.kernel,self.get_bias(),**self.kwargs)
+        
+        
+
+class OEConvBlock(torch.nn.Module):
+    '''Concatenate signals'''
+    def __init__(self,in_channels,out_channels,kernel_size,dimension,bias=None,**kwargs):
+        '''
+        In channels and out channels are a list now
+        
+        I want to call make_kernel on all of them, concatenate them into a big kernel, 
+        then feed in a concatenated vector
+        '''
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        blocks = {}
+        # NOTE they don't all need a bias, even for the scalar outputs, only one of them needs a bias
+        # note for matrix outputs, we should add the identity bias
+        for i in range(len(in_channels)):
+            for j in range(len(out_channels)):
+                blocks[str((i,j))] = OEConv(in_channels[i],out_channels[j],kernel_size,dimension,i,j,bias=((j==0) or (j==2))*(i==0)*(bias!=False))
+                blocks[str((i,j))].weights.data /= (len(in_channels))**0.5
+                if blocks[str((i,j))].bias is not None:
+                    blocks[str((i,j))].bias.data /= (len(in_channels))**0.5
+        self.blocks = torch.nn.ModuleDict(blocks)
+        # note
+        # the weights and the bias should be normalized by one over the sqrt of number of input channels
+        # now here the number of input channels is more
+        # I think we just need to normalize by 1/sqrt(len(in_channels)) assuming they are normalized properly
+        # further more, a map from a vector with 2 channels to a scalar with 1 channel, they get summed over
+        # but, they get summed over times a unit length vector, so I think this doesn't change anything
+        
+        
+        # we need to think about how to do the bias here
+        self.kwargs = kwargs
+        
+        
+        
+        self.dimension = dimension
+        if self.dimension == 2:
+            self.conv = torch.nn.functional.conv2d
+        elif self.dimension == 3:
+            self.conv = torch.nn.functional.conv3d
+        else:
+            raise Exception('only 2d or 3d supported')
+            
+        # I'm not sure this is the right way to do it
+        self.bias = self.blocks[str((0,0))].bias
+        if self.bias is None:
+            self.get_bias = self.get_bias_none
+        
+        # this block of zeros is for if I'm putting bias on the scalar part
+        if len(self.out_channels) > 1:
+            #print(torch.sum( 2**torch.arange(1,len(out_channels)) * torch.tensor(self.out_channels[1:]))   )
+            zeros = torch.zeros(     torch.sum( self.dimension**torch.arange(1,len(out_channels)) * torch.tensor(self.out_channels[1:]))   )
+            self.get_bias = self.get_bias_0
+            #print(zeros)
+        else:
+            zeros = torch.zeros(0)
+            self.get_bias = self.get_bias_0
+        self.register_buffer('zeros',zeros)
+        
+        # what if I want to add in bias for matrices proportional to identity
+        if len(self.out_channels) > 2: # scalars, vectors, and matrices
+            # number of components for vectors            
+            zeros1 = torch.zeros(     torch.sum( self.dimension**torch.arange(1,2) * torch.tensor(self.out_channels[1:2]))   )
+            self.register_buffer('zeros1',zeros1)
+            # remaining            
+            if len(self.out_channels) > 3:            
+                # this has not been validated
+                zeros2 = torch.zeros(torch.sum( self.dimension**torch.arange(3,len(out_channels)) * torch.tensor(self.out_channels[3:])))
+            else:
+                zeros2 = torch.zeros(0)
+            self.register_buffer('zeros2',zeros2)
+            self.get_bias = self.get_bias_0_2
+        
+        
+        
+        
+        
+        self.padding_kwargs = {}
+        if 'padding_mode' in kwargs:
+            self.padding_kwargs['mode'] = kwargs.pop('padding_mode')
+        if 'padding' in kwargs:
+            self.padding = kwargs.pop('padding')
+        else:
+            self.padding = 0
+    
+    def get_bias_none(self):
+        return None
+    def get_bias_0(self):
+        bias = torch.concatenate(
+                (
+                    self.blocks[str((0,0))].bias,
+                    self.zeros # could this be procomputed?
+                )
+            )
+        return bias
+    def get_bias_0_2(self):
+        # index is in then out
+        bias = torch.concatenate(
+                (
+                    self.blocks[str((0,0))].bias,
+                    self.zeros1,
+                    self.blocks[str((0,2))].get_bias(),
+                    self.zeros2
+                )
+            )
+        return bias
+    def forward(self,x):
+        kernel = []
+        
+        for j in range(len(self.out_channels)):
+            kernel_ = []
+            for i in range(len(self.in_channels)):
+                kernel_.append( self.blocks[str((i,j))].make_kernel() ) 
+            kernel_ = torch.concatenate(kernel_,1)
+            kernel.append(kernel_)
+        kernel = torch.concatenate(kernel,0)
+        
+        # when out channel is a scalar we have a bias, otherwise 0   
+        # TODO, still haven't worked out details of bias
+        
+        #if self.bias is not None:
+        #    bias = torch.concatenate(
+        #        (
+        #            self.bias,
+        #            self.zeros # could this be procomputed?
+        #        )
+        #    )
+        #else:
+        #    bias = None
+        bias = self.get_bias()
+        #print(bias.shape)
+        
+        
+        # TODO padding ahead of time
+        tmp = torch.nn.functional.pad(x,(self.padding,)*(2*self.dimension),**self.padding_kwargs)
+        return self.conv(tmp,kernel,bias=bias,**self.kwargs)    
+    # below these tests were for speed.  The above appraoch seems to be significantly faster
+    def test(self,x):        
+        # do it by hand
+        xs,xv = self.blocks[str((0,0))](x), self.blocks[str((0,1))](x)
+        
+        return torch.concatenate((xs,xv),-3)
+    def test1(self,x):        
+        # do it by hand
+        nscalar = x.shape[1]//3
+        xs,xv = (
+            self.blocks[str((0,0))](x[:,:nscalar])+self.blocks[str((1,0))](x[:,nscalar:]), 
+            self.blocks[str((0,1))](x[:,:nscalar])+self.blocks[str((1,1))](x[:,nscalar:])
+        )
+        
+        return torch.concatenate((xs,xv),-3)
+    
+def get_tensor_inds(channels,dimension):
+    '''
+    Parameters
+    ----------
+    Channels is a list of channels for each tensor order, starting with scalars.
+    '''
+    
+    indices = []
+    count = 0
+    for i in range(len(channels)): # scalars vectors etc.
+        for j in range(channels[i]):
+            indices.extend(  [count]*(dimension**i)  )
+            count += 1
+    #print(indices)
+    indices = torch.tensor(indices)
+    return indices
+    
+    
+class OESigmoidBlock(torch.nn.Module):
+    def __init__(self,channels,dimension,epsilon=1e-5,subtract_one=True):
+        super().__init__()
+        # channels is a list of scalar, vector, etc
+        self.channels = channels
+        self.dimension = dimension
+        self.epsilon = epsilon        
+        self.channelstot = np.sum(channels*self.dimension**np.arange(len(channels)))
+        self.channelssum = np.sum(channels)
+                        
+        self.register_buffer('indices',get_tensor_inds(channels,dimension))
+        self.sl  = (...,self.indices,) + (slice(None),)*dimension        
+        self.mag2sl = (...,slice(0,self.channelssum,)) + (slice(None),)*self.dimension
+        
+        self.subtract_one = subtract_one
+        if self.subtract_one:
+            self.normalization = self.normalization_subtract_one
+        else:
+            self.normalization = self.normalization_no_subtract_one
+        
+    def normalization_subtract_one(self,logmag,newlogmag):
+        return (newlogmag.exp()-1)/logmag.exp()
+    def normalization_no_subtract_one(self,logmag,newlogmag):
+        return (newlogmag-logmag).exp()
+            
+        
+    def forward(self,x):
+        
+        # square it
+        x2 = x**2
+        # now get the magnitude
+        mag2 = torch.zeros_like(x[self.mag2sl])
+        mag2.index_add_(-self.dimension-1,self.indices,x2)
+        mag2 += self.epsilon
+        logmag = 0.5*torch.log(mag2)
+        # now a new logmag
+        newlogmag = torch.relu(logmag) # minus 1 somewhere??
+        # now the logmag is always positive
+        # so when I exponentiate it the mag is always bigger than 1
+        # so if I subtract 1 from it I get things zeroed out
+        #magfactor = torch.exp(newlogmag - logmag)# - 1
+        #magfactor = (newlogmag.exp()-1)/logmag.exp()
+        #magfactor = (newlogmag.exp()-1)/mag2**0.5
+        # magfactor = (newlogmag-logmax).exp() # with no minus one there is less of a nonlinearity, less sparsity
+        # now I need to map magfactor back up to the original size
+        # this is like a repeat        
+        magfactor = self.normalization(newlogmag,logmag)
+        return x*magfactor[self.sl]    
+    
+class OESigmoidBlock_(torch.nn.Module):
+    def __init__(self,channels,dimension,epsilon=1e-5,**kwargs):
+        super().__init__()
+        # channels is a list of scalar, vector, etc
+        self.channels = channels
+        self.dimension = dimension
+        self.epsilon = epsilon        
+        self.channelstot = np.sum(channels*2**np.arange(len(channels)))
+        self.channelssum = np.sum(channels)
+                        
+        self.register_buffer('indices',get_tensor_inds(channels,dimension))
+        self.sl  = (...,self.indices,) + (slice(None),)*dimension        
+        self.mag2sl = (...,slice(0,self.channelssum,)) + (slice(None),)*self.dimension
+        
+        
+            
+        
+    def forward(self,x):
+        
+        # square it
+        x2 = x**2
+        # now get the magnitude
+        mag2 = torch.zeros_like(x[self.mag2sl])
+        mag2.index_add_(-self.dimension-1,self.indices,x2)
+        # essentially the magnitude gets cubed, very simple but it blows up
+        return x*mag2[self.sl]        
+    
+    
+class OESigmoidBlock_(torch.nn.Module):
+    def __init__(self,*params,**kwargs):
+        super().__init__()
+        pass
+    def forward(self,x):
+        return x
+class OEBatchnormBlock(torch.nn.Module):
+    def __init__(self,channels,dimension,epsilon=1e-5,**kwargs):
+        ''' Note there is code duplication here. TODO merge them with sigmoid
+        
+        Note if a variable is a standard normal
+        And I take exp 
+        Then its std becomes
+        ( (np.exp(1)-1)*np.exp(1) )**0.5
+        This is a lognormal with mu=0 and var=1
+        
+        Essentially, after normalization we should divide by 2.
+        Question, should I scale in the log domain? This would be equivalent to applying a power
+        
+        ( (np.exp(sigma2)-1)*np.exp(sigma2) )**0.5 = 1
+        exp(2sigma2) - exp(sigma2) = 1
+        I could solve for exp(sigma2) which would be a quadratic
+        then take the log
+        just
+        x^2 - x - 1 = 0
+        [1 pm sqrt( 1 + 4  )]/2
+        [1 pm sqrt(5)]/2
+        sigma2 = np.log((1 + np.sqrt(5))/2)
+        sigma = sqrt( np.log((1 + np.sqrt(5))/2) )
+        '''
+        super().__init__()
+        # channels is a list of scalar, vector, etc
+        self.channels = channels
+        self.dimension = dimension
+        self.epsilon = epsilon
+        
+        # first I will square it
+        # then I will sum it with a single matrix multiplication
+        # 
+        self.channelstot = np.sum(channels*self.dimension**np.arange(len(channels)))
+        self.channelssum = np.sum(channels)
+                        
+        self.register_buffer('indices',get_tensor_inds(channels,dimension))
+        self.sl = (...,self.indices,) + (slice(None),)*dimension        
+        self.mag2sl = (...,slice(0,self.channelssum,)) + (slice(None),)*self.dimension
+        
+        if dimension == 2:
+            self.b = torch.nn.BatchNorm2d(self.channelssum,**kwargs)
+        elif dimension == 3:
+            self.b = torch.nn.BatchNorm3d(self.channelssum,**kwargs)
+        else:
+            raise Exception('currently only supported for 2d and 3d')
+            
+        # this is a factor to multiply by after exp
+        self.factor = 1.0/((np.e-1)*np.e)**0.5
+        # this is the factor to multiply before
+        self.factor = np.log((1 + np.sqrt(5))/2)**0.5
+        
+    def forward(self,x):
+        
+        # square it
+        x2 = x**2
+        # now get the magnitude
+        mag2 = torch.zeros_like(x[self.mag2sl]) #        
+        #print(mag2.shape)
+        
+        mag2.index_add_(-self.dimension-1,self.indices,x2)
+        mag2 += self.epsilon
+        logmag = 0.5*torch.log(mag2)        
+        # now a new logmag
+        newlogmag = self.b(logmag)
+        # this give sigma1
+        # below we get sigma such that the variance will be 1 after exp
+        newlogmag = newlogmag*self.factor/2 # i think the /2 might be a good idea to help stabilize
+        
+                
+        magfactor = torch.exp(newlogmag - logmag) 
+        # now I need to map magfactor back up to the original size
+        # this is like a repeat        
+        
+        return x*magfactor[self.sl]#*self.factor
+class OEBatchnormBlock_(torch.nn.Module):
+    def __init__(self,*params,**kwargs):
+        super().__init__()
+    def forward(self,x):
+        return x
+    
+
+def rotate2D(x,channels,theta):
+    '''
+    Parameters
+    ----------
+    x : tensor
+        An image
+    TODO
+    ----
+    Implmenet a function that can rotate an image with an arbitrary numer of channels
+    '''
+    R = torch.tensor([
+        [np.cos(theta),-np.sin(theta)],
+        [np.sin(theta),np.cos(theta)],
+    ],dtype=x.dtype,device=x.device)
+    Ri = torch.linalg.inv(R)
+    nx = x.shape[-2:]
+    #print(nx)
+    points = [torch.arange(n,dtype=x.dtype,device=x.device) - (n-1)/2 for n in nx]
+    X = torch.stack(torch.meshgrid(points,indexing='ij'),-1)
+    
+    Xs = (Ri@X[...,None])[...,0]
+    Xs = Xs - torch.stack([p[0] for p in points])
+    Xs = Xs / torch.stack([p[-1]-p[0] for p in points]) # between 0 and 1
+    Xs = Xs*2-1
+    #print(Xs)
+    xr0 = torch.nn.functional.grid_sample(x,Xs[None].flip(-1),align_corners=True)
+    xr = torch.zeros_like(xr0)
+    # first loop is over the channel types
+    for i in range(len(channels)):
+        # second loop is over the channels of this type
+        for j in range(channels[i]):
+            # third loop is over the output components in this channel
+            for k in product( *((0,1),)*i  ):
+                print(k)
+            
+
+
+            pass
+    
+    return xr0
+
+# these functions below will rotate one image
+def rotate_scalar(x,theta):
+    R = torch.tensor([
+        [np.cos(theta),-np.sin(theta)],
+        [np.sin(theta),np.cos(theta)],
+    ],dtype=x.dtype,device=x.device)
+    Ri = torch.linalg.inv(R)
+    nx = x.shape[-2:]
+    #print(nx)
+    points = [torch.arange(n,dtype=x.dtype,device=x.device) - (n-1)/2 for n in nx]
+    X = torch.stack(torch.meshgrid(points,indexing='ij'),-1)
+    
+    Xs = (Ri@X[...,None])[...,0]
+    Xs = Xs - torch.stack([p[0] for p in points])
+    Xs = Xs / torch.stack([p[-1]-p[0] for p in points]) # between 0 and 1
+    Xs = Xs*2-1
+    #print(Xs)
+    xr0 = torch.nn.functional.grid_sample(x,Xs[None].flip(-1),align_corners=True)
+    return xr0
+
+
+def rotate_vector(x,theta):
+    R = torch.tensor([
+        [np.cos(theta),-np.sin(theta)],
+        [np.sin(theta),np.cos(theta)],
+    ],dtype=x.dtype,device=x.device)
+    Ri = torch.linalg.inv(R)
+    nx = x.shape[-2:]
+    #print(nx)
+    points = [torch.arange(n,dtype=x.dtype,device=x.device) - (n-1)/2 for n in nx]
+    X = torch.stack(torch.meshgrid(points,indexing='ij'),-1)
+    
+    Xs = (Ri@X[...,None])[...,0]
+    Xs = Xs - torch.stack([p[0] for p in points])
+    Xs = Xs / torch.stack([p[-1]-p[0] for p in points]) # between 0 and 1
+    Xs = Xs*2-1
+    #print(Xs)
+    xr0 = torch.nn.functional.grid_sample(x,Xs[None].flip(-1),align_corners=True)
+    # the channels is the second index, but we want to move it to the last for matmul
+    xr0p = xr0.transpose(-3,-1)
+    xr = (R@xr0p[...,None])[...,0]
+    xr = xr.transpose(-3,-1)
+    return xr
+
+def rotate_matrix(x,theta):
+    R = torch.tensor([
+        [np.cos(theta),-np.sin(theta)],
+        [np.sin(theta),np.cos(theta)],
+    ],dtype=x.dtype,device=x.device)
+    Ri = torch.linalg.inv(R)
+    nx = x.shape[-2:]
+    #print(nx)
+    points = [torch.arange(n,dtype=x.dtype,device=x.device) - (n-1)/2 for n in nx]
+    X = torch.stack(torch.meshgrid(points,indexing='ij'),-1)
+    
+    Xs = (Ri@X[...,None])[...,0]
+    Xs = Xs - torch.stack([p[0] for p in points])
+    Xs = Xs / torch.stack([p[-1]-p[0] for p in points]) # between 0 and 1
+    Xs = Xs*2-1
+    #print(Xs)
+    xr0 = torch.nn.functional.grid_sample(x,Xs[None].flip(-1),align_corners=True)
+    # the channels is the second index, but we want to move it to the last for matmul
+    xr0p = xr0.transpose(-3,-1)
+    xr0pm = xr0p.reshape(-1,2,2)
+    xr = R@xr0pm@R.T
+    xr = xr.reshape(xr0p.shape)
+    xr = xr.transpose(-3,-1)
+    return xr
+
+
