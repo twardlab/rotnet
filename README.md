@@ -27,10 +27,10 @@ Multiple such kernels of different ranks are stacked into a single matrix-valued
 
 ## Experimental Results
 1. Image Classification
-!(/images/classification_results.png)
+![](/images/classification_results.png)
 2. Image Registration
-!(/images/registration_results.png)
+![](/images/registration_results.png)
 3. Cell Detection
-!(/images/detection_results.png)
+![](/images/detection_results.png)
 # Further Reading
 If you are interested in reading more details about our derivations and implementations related to this work, you can find a preliminary draft of our paper [here](https://arxiv.org/abs/2505.21736).
