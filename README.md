@@ -33,4 +33,4 @@ Multiple such kernels of different ranks are stacked into a single matrix-valued
 ### <ins>Cell Detection</ins>
 ![](/images/detection_results.png)
 # Further Reading
-If you are interested in reading more details about our derivations and implementations related to this work, you can find a preliminary draft of our paper [here](https://arxiv.org/abs/2505.21736).
+If you are interested in reading more details about the derivations, implementations, and experiments related to this work, you can find a preliminary draft of our paper [here](https://arxiv.org/abs/2505.21736).
