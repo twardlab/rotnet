@@ -26,7 +26,7 @@ When a convolution module is initialized, all signatures for a given rank _r_ te
 Multiple such kernels of different ranks are stacked into a single matrix-valued kernel, the blocks of which map between tensor fields of different rank, which is used in a standard convolution layer. Input and output tensor-valued images of different rank are also stacked using lexicographic ordering. This leads to a linear acting on a set of tensor-valued features being applied in one standard convolution operation. Due to discretization, our networks are exactly equivariant for 90-degree rotations and reflections and only approximately equivariant for other angles.
 
 ## Experimental Results
-### Image Classification
+### <ins>Image Classification</ins>
 ![](/images/classification_results.png)
 ### Image Registration
 ![](/images/registration_results.png)
