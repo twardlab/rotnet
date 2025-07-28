@@ -5,7 +5,7 @@ Rotational equivariant network using vector fields.
 ## Overview
 The principle of translation equivariance (if an input image is translated, then an output image should be translated by the same amount), led to the development of convolutional neural networks (CNNs) that revolutionized machine vision. Other symmetries, like rotations and reflections, play a similarly critical role, especially in biomedical image analysis. However, exploiting these symmetries has not seen wide adoption. We hypothesize that this is partially due to the mathematical complexity of methods used to exploit these symmetries, which often rely on representation theory, a bespoke concept in differential geometry and group theory. In this work, we show that the same equivariance can be achieved using a simple form of convolution kernels that we call “**moment kernels**,” and prove that all equivariant kernels must take this form. These are a set of radially symmetric functions of a spatial position *x*, multiplied by powers of the components of _x_ or the identity matrix. We implement equivariant neural networks using standard convolution modules, and provide architectures to execute several biomedical image analysis tasks that depend on equivariance principles: _classification_ (outputs are invariant under orthogonal transforms), _3D image registration_ (outputs transform like a vector), and _cell segmentation_ (quadratic forms defining ellipses transform like a matrix).
 
-## Implementation
+## Moment Kernel Definitions
 Image channels are divided into blocks of 3. The first channel is a scalar field, and the second two are the components of vector fields. The convolution layer includes kernels of a specific form to be rotationally equivariant, including specific forms for the following:
 1. Maps between two scalar fields
    - $k(x) = f_{ss}(|x|)$
@@ -15,6 +15,8 @@ Image channels are divided into blocks of 3. The first channel is a scalar field
    - $k(x) = f_{vs}(|x|)x^{T}$
 4. Maps between two vector fields
    - $k(x) = f_{vv0}(|x|)id + f_{vv1}(|x|)xx^{T}$
+5. Maps between 2 general tensors of rank _r_
+   - $k^{i_{1},...,i_{r}}(x) = f_{\emptyset}(|x|)x^{i_{1},...,i_{r}}$
 
 Additionally, to maintain rotational equivariance, we have a new nonlinearity that depends only on vector (and scalar) magnitude, a new batchnorm layer, and a new downsampling layer.
 
@@ -47,11 +49,3 @@ When we report quality, we'll want to consider which of these datasets we actual
 I think it is Blood, Path, Derma, Path, maybe Tissue.
 
 I hypothesize that our architecture will do better on the rotationally invariant datasets, but not on the others.  I hypothesize that our architecture will do better with a smaller number of samples and may not matter when we have a lot of samples.
-
-## Other interesting thigs to look at
-
-It would be nice to compare this to resnets with data augmentation, even though we are claiming this could replace augmentation.
-
-It would be nice, for demonstration purposes, to evaluate the resnets on a rotated version of the training set.
-
-Ultimately we will want to implement this in 3D.
