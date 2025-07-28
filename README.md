@@ -8,13 +8,13 @@ The principle of translation equivariance (if an input image is translated, then
 ## Implementation
 Image channels are divided into blocks of 3. The first channel is a scalar field, and the second two are the components of vector fields. The convolution layer includes kernels of a specific form to be rotationally equivariant, including specific forms for the following:
 1. Maps between two scalar fields
-   - k(x) = f_{ss}(|x|)
+   - $k(x) = f_{ss}(|x|)$
 2. Maps between scalar and vector fields
-   - k(x) = f_{sv}(|x|)x
+   - $k(x) = f_{sv}(|x|)x$
 3. Maps between vector and scalar fields
-   - k(x) = f_{vs}(|x|)x^{T}
+   - $k(x) = f_{vs}(|x|)x^{T}$
 4. Maps between two vector fields
-   - k(x) = f_{vv0}(|x|)id + f_{vv1}(|x|)xx^{T}
+   - $k(x) = f_{vv0}(|x|)id + f_{vv1}(|x|)xx^{T}$
 
 Additionally, to maintain rotational equivariance, we have a new nonlinearity that depends only on vector (and scalar) magnitude, a new batchnorm layer, and a new downsampling layer.
 
